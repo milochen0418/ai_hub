@@ -1,0 +1,9 @@
+{
+  "name": "ai-hub-claude-channel",
+  "private": true,
+  "type": "module",
+  "description": "The AI Hub's channel into Claude Code on the owner's computer (for the owner's development).",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}

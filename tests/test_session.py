@@ -1,0 +1,193 @@
+"""The Claude Code on the owner's computer: the passcode that keeps it the owner's, and how
+messages, tool calls and answers pass between the assistant and its channel."""
+
+from __future__ import annotations
+
+import asyncio
+import collections
+import time
+
+import httpx
+import httpx2
+import pytest
+from mcp import Client
+from mcp.client.streamable_http import streamable_http_client
+from starlette.applications import Starlette
+from starlette.routing import Route
+
+from ai_hub import agent, calls, config, mcp_endpoint, registry, session
+
+TOOL = registry.Tool(
+    app="cad",
+    name="cad.set_code",
+    title="Write the room's code",
+    description="Replaces the code.",
+    kind="write",
+    input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+    backend="http://cad",
+)
+
+
+@pytest.fixture(autouse=True)
+def fresh_session(monkeypatch):
+    monkeypatch.setattr(session, "_queue", collections.deque())
+    monkeypatch.setattr(session, "_current", None)
+    monkeypatch.setattr(session, "_seen", float("-inf"))
+    monkeypatch.setattr(session, "_cond", None)
+    monkeypatch.setattr(session, "POLL", 0.5)
+
+
+def channel(token: str) -> httpx.AsyncClient:
+    """The hub's side of the channel, as the channel on the owner's computer reaches it."""
+    app = Starlette(
+        routes=[
+            Route(session.NEXT_PATH, session.next_message),
+            Route(session.REPLY_PATH, session.reply, methods=["POST"]),
+        ]
+    )
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://hub", headers={"Authorization": f"Bearer {token}"}
+    )
+
+
+async def ignore(event) -> None:
+    pass
+
+
+def test_the_passcode_marks_the_owners_browser() -> None:
+    assert not config.has_passcode() and not config.is_owner("anything")
+    config.set_passcode("open sesame")
+    assert config.check_passcode("open sesame") and not config.check_passcode("open sesame!")
+    key = config.owner_key()
+    assert config.is_owner(key) and not config.is_owner("") and not config.is_owner(key[:-1] + "x")
+
+    config.set_passcode("a new one")
+    assert not config.is_owner(key)  # browsers have to give the new passcode
+    assert config.is_owner(config.owner_key())
+
+
+def test_a_passcode_from_the_environment_wins(monkeypatch) -> None:
+    config.set_passcode("stored")
+    key = config.owner_key()
+    monkeypatch.setenv("ADMIN_PASSCODE", "from the environment")
+    assert config.check_passcode("from the environment") and not config.check_passcode("stored")
+    assert not config.is_owner(key)
+
+
+def test_the_session_token_makes_claude_code_a_provider() -> None:
+    assert config.SESSION not in config.providers()
+    first = config.make_session_token()
+    second = config.make_session_token()
+    assert config.token_info(first) is None  # a new one replaces it
+    info = config.token_info(second)
+    assert info == {"id": config.session_token_id(), "name": config.SESSION_TOKEN_NAME}
+    assert config.resolve(f"{config.SESSION}/")[0].kind == "session"
+
+    config.set_role("local", f"{config.SESSION}/")
+    with pytest.raises(LookupError):
+        config.resolve("local")  # the local role stays on this machine
+
+    config.delete_token(info["id"])
+    assert config.session_token_id() == "" and config.SESSION not in config.providers()
+
+
+async def test_a_message_goes_to_the_session_and_its_answer_comes_back() -> None:
+    token = config.make_session_token()
+    other = config.token_info(config.create_token("someone else"))
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    async with channel(token) as http:
+        assert (await http.get(session.NEXT_PATH)).status_code == 204  # nothing yet; the channel runs
+        asking = asyncio.create_task(session.ask("c1", "draw a table", "cad", "r1", show))
+        r = await http.get(session.NEXT_PATH)
+        assert r.json() == {"chat": "c1", "text": "draw a table", "app": "cad", "room": "r1"}
+
+        await session.tool_called(config.session_token_id(), "cad_set_code", {"code": "x"})
+        await session.tool_done(config.session_token_id(), "cad_set_code", calls.Result(True, {"lines": 1}))
+        await session.tool_called(other["id"], "cad_snapshot", {})  # someone else's: not in this chat
+        note = await http.post(session.REPLY_PATH, json={"chat": "c1", "text": "On it.", "done": False})
+        answer = await http.post(session.REPLY_PATH, json={"chat": "c1", "text": "Done: a table."})
+        assert note.status_code == answer.status_code == 200
+        await asyncio.wait_for(asking, 5)
+
+        late = await http.post(session.REPLY_PATH, json={"chat": "c1", "text": "late"})
+        assert late.status_code == 404
+
+    assert [e["type"] for e in events] == ["model", "tool", "result", "text", "text"]
+    assert events[1]["name"] == "cad_set_code" and events[-1]["text"] == "Done: a table."
+
+
+async def test_the_next_message_waits_for_the_answer_to_the_last() -> None:
+    token = config.make_session_token()
+    async with channel(token) as http:
+        await http.get(session.NEXT_PATH)
+        first = asyncio.create_task(session.ask("a", "first", "", "", ignore))
+        second = asyncio.create_task(session.ask("b", "second", "", "", ignore))
+        assert (await http.get(session.NEXT_PATH)).json()["chat"] == "a"
+        assert (await http.get(session.NEXT_PATH)).status_code == 204  # "a" has no answer yet
+        await http.post(session.REPLY_PATH, json={"chat": "a", "text": "ok"})
+        assert (await http.get(session.NEXT_PATH)).json()["chat"] == "b"
+        await http.post(session.REPLY_PATH, json={"chat": "b", "text": "ok"})
+        await asyncio.wait_for(asyncio.gather(first, second), 5)
+
+
+@pytest.mark.parametrize("who", ["someone else", "not a token"])
+async def test_only_the_session_token_may_fetch_or_answer(who) -> None:
+    config.make_session_token()
+    token = config.create_token(who) if who == "someone else" else "aihub_nope"
+    async with channel(token) as http:
+        assert (await http.get(session.NEXT_PATH)).status_code == 401
+        assert (await http.post(session.REPLY_PATH, json={"chat": "c", "text": "x"})).status_code == 401
+
+
+async def test_without_the_channel_running_the_person_is_told() -> None:
+    config.make_session_token()
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    await session.ask("c", "hi", "", "", show)
+    assert events == [{"type": "error", "text": session.NOT_RUNNING}]
+
+
+async def test_a_role_set_to_claude_code_goes_to_the_session(monkeypatch) -> None:
+    config.make_session_token()
+    config.set_role("smart", f"{config.SESSION}/")
+    handed = []
+
+    async def fake_ask(chat, text, app, room, on_event) -> None:
+        handed.append((chat, text, app, room))
+
+    monkeypatch.setattr(session, "ask", fake_ask)
+    chat = agent.Chat("smart", agent.Scope("cad", "r1"), user="assistant")
+    await chat.send("draw a table", ignore)
+    assert handed == [(chat.id, "draw a table", "cad", "r1")]
+
+
+async def test_its_tool_calls_through_the_mcp_address_show_in_the_chat(monkeypatch) -> None:
+    async def fake_tools(refresh: bool = False):
+        return [TOOL]
+
+    async def fake_call(tool, args, user, via):
+        return calls.Result(True, {"lines": 1})
+
+    monkeypatch.setattr(registry, "tools", fake_tools)
+    monkeypatch.setattr(calls, "call", fake_call)
+    token = config.make_session_token()
+    turn = session._Turn("c1", "draw", "cad", "", asyncio.Queue(), delivered=time.monotonic())
+    monkeypatch.setattr(session, "_current", turn)
+
+    async with mcp_endpoint.lifespan():
+        app = Starlette(routes=[Route(mcp_endpoint.PATH, mcp_endpoint.endpoint)])
+        http = httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://hub", headers={"Authorization": f"Bearer {token}"}
+        )
+        async with Client(streamable_http_client("http://hub/api/mcp", http_client=http)) as client:
+            await client.call_tool("cad_set_code", {"code": "x"})
+
+    shown = [turn.events.get_nowait() for _ in range(turn.events.qsize())]
+    assert [e["type"] for e in shown] == ["tool", "result"] and shown[1]["ok"] is True

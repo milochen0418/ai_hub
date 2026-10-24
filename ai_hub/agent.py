@@ -1,0 +1,122 @@
+"""The hub's assistant: a model that does a task in the apps with their tools.
+
+Ollama and the model APIs only answer; the assistant gives them the apps' tools and runs the
+loop: the model asks for tools, the hub calls them (``ai_hub.calls``, for the person who asked),
+hands back the results, and asks again, until the model is done. People see each step in their
+apps as it happens. ``Chat`` keeps one conversation going across messages.
+
+A role set to the Claude Code on the owner's computer is the exception: that is an agent with
+a loop of its own, so the message goes to it (``ai_hub.session``) and its steps come back.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import secrets
+from typing import Any, Awaitable, Callable
+
+from ai_hub import brains, calls, config, registry, session
+
+MAX_STEPS = 24
+
+SYSTEM = """\
+You are the assistant of the AI Hub on a re_ddns host. You do tasks in people's apps with the \
+tools you are given; each tool's name starts with its app's name. Do the task with the tools \
+instead of describing it: call them right away, and write text only when the task is done (a \
+short summary) or when you need something from the person. What you change, the people using \
+the app see at once. Before you use an app's tools for the first time, call its guide tool if \
+it has one. When a tool reports an error, fix the cause and try again. Write in the language \
+the person writes in."""
+
+Event = dict[str, Any]
+
+
+@dataclasses.dataclass
+class Scope:
+    """Where the assistant was opened: an app (its tools only) and that app's context."""
+
+    app: str = ""
+    room: str = ""
+
+    def note(self) -> str:
+        if not self.app:
+            return ""
+        where = f" in the room '{self.room}'" if self.room else ""
+        hint = f" Pass room='{self.room}' to its tools." if self.room else ""
+        return f"\n\nThe person opened you from the app '{self.app}'{where}.{hint}"
+
+    def fill(self, tool: registry.Tool, args: dict[str, Any]) -> dict[str, Any]:
+        """The model's arguments, with this room where the tool takes one and the model left it
+        out: a tool's own default room is someone else's."""
+        if self.room and "room" in (tool.input_schema.get("properties") or {}) and not args.get("room"):
+            return {**args, "room": self.room}
+        return args
+
+
+class Chat:
+    def __init__(self, role: str, scope: Scope, user: str) -> None:
+        self.id = secrets.token_hex(4)
+        self.role = role
+        self.scope = scope
+        self.user = user
+        self.conversation: brains.Conversation | None = None
+
+    async def _tools(self) -> list[registry.Tool]:
+        found = await registry.tools(refresh=True)
+        return [t for t in found if not self.scope.app or t.app == self.scope.app]
+
+    async def _guide(self, tools: list[registry.Tool]) -> str:
+        """The app's guide (its ``<app>.guide`` tool), read once up front so that even a small
+        model starts out knowing the app's rules."""
+        guide = next((t for t in tools if t.name == f"{self.scope.app}.guide"), None)
+        if guide is None:
+            return ""
+        result = await calls.call(guide, {}, self.user, via="assistant")
+        if not result.ok:
+            return ""
+        return f"\n\nThe app's guide (read for you already: no need to call {guide.public_name}):\n{result.text()}"
+
+    async def send(self, text: str, on_event: Callable[[Event], Awaitable[None]]) -> None:
+        """Works on the person's message until the model is done, reporting each step."""
+        provider, _ = config.resolve(self.role)
+        if provider.kind == "session":
+            await session.ask(self.id, text, self.scope.app, self.scope.room, on_event)
+            return
+        tools = await self._tools()
+        if self.conversation is None:
+            guide = await self._guide(tools) if self.scope.app else ""
+            self.conversation = await brains.conversation(self.role, SYSTEM + self.scope.note() + guide)
+            await on_event({"type": "model", "text": self.conversation.label})
+        by_name = {t.public_name: t for t in tools}
+        self.conversation.add_user(text)
+        for _ in range(MAX_STEPS):
+            step = await self.conversation.step(tools)
+            if step.refused:
+                await on_event({"type": "error", "text": "The model declined this request."})
+                return
+            if step.text:
+                await on_event({"type": "text", "text": step.text})
+            if not step.calls:
+                if not step.text:
+                    await on_event({"type": "error", "text": "The model stopped without a reply."})
+                return
+            results = []
+            for call in step.calls:
+                tool = by_name.get(call.name)
+                args = self.scope.fill(tool, call.args) if tool else call.args
+                await on_event({"type": "tool", "name": call.name, "app": tool.app if tool else "", "args": args})
+                if tool is None:
+                    result = calls.Result(False, error=f"there is no tool named {call.name!r}")
+                else:
+                    result = await calls.call(tool, args, self.user, via="assistant")
+                await on_event(
+                    {
+                        "type": "result",
+                        "name": call.name,
+                        "ok": result.ok,
+                        "text": "a picture" if result.image else result.text()[:300],
+                    }
+                )
+                results.append((call, result))
+            self.conversation.add_results(results)
+        await on_event({"type": "error", "text": f"Stopped after {MAX_STEPS} steps."})

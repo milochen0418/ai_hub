@@ -1,0 +1,32 @@
+.states
+.web
+# Reflex / Python
+assets/external/
+.states/
+.web/
+*.db
+*.py[cod]
+__pycache__/
+
+# Uploaded files
+uploaded_files/
+
+# Environment variables
+.env
+
+# macOS
+.DS_Store
+
+# Playwright / Test artifacts
+testcases/**/output/
+.playwright-mcp/
+.pytest_cache/
+
+# AI reference screenshots (root-level only; keep locally)
+/*.png
+
+# Poetry virtualenv (kept in-project for AI agent / IDE access)
+.venv/
+
+# The Claude Code channel's npm packages (setup.sh installs them outside the checkout)
+claude_channel/node_modules/
