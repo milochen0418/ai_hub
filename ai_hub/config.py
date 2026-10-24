@@ -201,6 +201,20 @@ def session_token_id() -> str:
     return load().get("session", {}).get("token_id", "")
 
 
+def session_hooked() -> bool:
+    """Whether the session's hooks have reported since its token was made (ai_hub.session): kept
+    here, so the hub still knows after a restart."""
+    return bool(load().get("session", {}).get("hooked"))
+
+
+def mark_session_hooked() -> None:
+    with _lock:
+        data = load()
+        if data.get("session", {}).get("token_id") and not data["session"].get("hooked"):
+            data["session"]["hooked"] = True
+            save(data)
+
+
 def tokens() -> list[dict[str, Any]]:
     return [{k: t[k] for k in ("id", "name", "created")} for t in load()["tokens"]]
 

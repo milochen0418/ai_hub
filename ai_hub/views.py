@@ -376,6 +376,10 @@ def message_row(m: rx.Var) -> rx.Component:
         ("user", rx.el.div(m["text"], class_name="shrink-0 self-end max-w-[80%] bg-emerald-600 text-white rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap")),
         ("assistant", rx.el.div(m["text"], class_name="shrink-0 self-start max-w-[85%] bg-white border border-slate-200 rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap")),
         ("tool", rx.el.div("⚙ " + m["text"], class_name="shrink-0 self-start text-xs font-mono text-slate-500 pl-2")),
+        # What Claude Code on the owner's computer does besides the apps' tools (ai_hub.session).
+        ("web", rx.el.div("🌐 " + m["text"], class_name="shrink-0 self-start text-xs text-sky-700 pl-2 truncate max-w-[85%]")),
+        ("note", rx.el.div(m["text"], class_name="shrink-0 self-start max-w-[85%] text-xs italic text-slate-500 border-l-2 border-slate-300 pl-2 whitespace-pre-wrap")),
+        ("info", rx.el.div(m["text"], class_name="shrink-0 self-start text-xs text-slate-600 pl-2")),
         ("result", rx.el.div("✓ " + m["text"], class_name="shrink-0 self-start text-xs font-mono text-emerald-700 pl-4 truncate max-w-[85%]")),
         rx.el.div("✗ " + m["text"], class_name="shrink-0 self-start text-xs font-mono text-red-600 pl-4 whitespace-pre-wrap max-w-[85%]"),
     )
@@ -447,10 +451,10 @@ def chat_view(dialog: bool = False) -> rx.Component:
             rx.cond(
                 AssistantState.busy,
                 rx.el.div(
-                    rx.el.span(class_name="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0"),
-                    rx.el.span(rx.cond(AssistantState.status != "", AssistantState.status, "…")),
+                    rx.el.span(class_name="h-2 w-2 mt-1 rounded-full bg-emerald-500 animate-pulse shrink-0"),
+                    rx.el.span(rx.cond(AssistantState.status != "", AssistantState.status, "…"), class_name="whitespace-pre-wrap"),
                     id="assistant-status",
-                    class_name="shrink-0 self-start flex items-center gap-2 text-xs text-slate-500 pl-2",
+                    class_name="shrink-0 self-start flex items-start gap-2 text-xs text-slate-500 pl-2",
                 ),
             ),
             class_name="flex flex-col gap-2 overflow-y-auto flex-1 min-h-[240px] py-2",

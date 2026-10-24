@@ -129,6 +129,22 @@ company, a product, or anyone else uses an API key instead ("Claude" above), as
 
 One message is worked on at a time; the next waits for the answer to the last.
 
+While it works, the dialog shows what it does: under the messages, a line says what it is doing now
+("thinking (max effort) · 12 min", "searching the web: …", "reading …", "using cad_set_code",
+"waiting for you in its terminal: …", "finishing earlier work") and how long it has been on the
+message; the chat lists its web searches, the pages it reads and the apps' tools it uses, with the
+short notes it writes in between. The dialog waits for as long as it works, and stops waiting when
+it answers, ends its turn without answering (the dialog then shows what it last wrote in its
+terminal), fails, or is closed; **New chat** stops waiting at once (its next message goes to the
+session when the turn ends). This comes from the session's
+[hooks](https://code.claude.com/docs/en/hooks), which `setup.sh` writes into
+`.claude/settings.local.json` of the session folder: each pipes its event to `curl`, which posts it
+to `/api/session/activity` (Claude Code's own HTTP hooks may reach only loopback and public
+addresses, not a hub on the local network). They apply only to the Claude Code that `start.sh` runs
+there, and change nothing in it when the hub can't be reached. Set up before they existed, it shows
+only the apps' tools, and the dialog gives up after 20 minutes without one: run `setup.sh` again
+(with a new token) and restart the session.
+
 ## Running it
 
 ```bash

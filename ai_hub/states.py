@@ -258,7 +258,8 @@ class AssistantState(rx.State):
     messages: list[dict[str, str]] = []
     draft: str = ""
     busy: bool = False
-    # While busy: how it goes (e.g. "Claude Code is working · 4 min · 12 steps · last step 8 s ago").
+    # While busy: how it goes, e.g. "Claude Code is searching the web: “…” · 6 s" and, on a second
+    # line, "14 min on this message · 9 steps".
     status: str = ""
     role: str = "smart"
     app: str = ""
@@ -278,13 +279,16 @@ class AssistantState(rx.State):
         self.passcode = value
 
     @rx.event
-    def set_role(self, value: str):
+    async def set_role(self, value: str):
         if value in config.ROLES and value != self.role:
             self.role = value
-            self._new_chat()
+            await self._new_chat()
 
-    def _new_chat(self) -> None:
-        _CHATS.pop(self._chat_id, None)
+    async def _new_chat(self) -> None:
+        chat = _CHATS.pop(self._chat_id, None)
+        if chat is not None:
+            # Claude Code on the owner's computer may still be on it: stop waiting for it there.
+            await session.drop(chat.id)
         self._chat_id = ""
         self.messages = []
         self.model = ""
@@ -298,26 +302,26 @@ class AssistantState(rx.State):
             self.busy, self.status = False, ""
 
     @rx.event
-    def new_chat(self):
-        self._new_chat()
+    async def new_chat(self):
+        await self._new_chat()
 
     @rx.event
-    def on_load(self):
+    async def on_load(self):
         """The page: /assistant?in_app=cad&room=default&role=smart (or app=cad)."""
         query = self.router.url.query_parameters
-        self._open_scope(dict(query))
+        await self._open_scope(dict(query))
 
     @rx.event
-    def open_intent(self, params: dict):
+    async def open_intent(self, params: dict):
         """Opened from another app as a dialog (the ai.assist intent)."""
-        self._open_scope(params)
+        await self._open_scope(params)
 
-    def _open_scope(self, params: dict) -> None:
+    async def _open_scope(self, params: dict) -> None:
         app = str(params.get("in_app") or params.get("app") or "")
         room = str(params.get("room") or "")
         role = str(params.get("role") or self.role)
         if (app, room) != (self.app, self.room):
-            self._new_chat()
+            await self._new_chat()
         self._unstick()
         self.app, self.room = app, room
         if role in config.ROLES:
@@ -370,6 +374,8 @@ class AssistantState(rx.State):
                     self.messages.append({"kind": "assistant", "text": event["text"]})
                 elif kind == "tool":
                     self.messages.append({"kind": "tool", "text": event["name"]})
+                elif kind in ("web", "note", "info"):
+                    self.messages.append({"kind": kind, "text": event["text"]})
                 elif kind == "result":
                     self.messages.append({"kind": "result" if event["ok"] else "error", "text": event["text"]})
                 elif kind == "error":

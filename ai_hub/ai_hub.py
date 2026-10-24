@@ -34,4 +34,5 @@ def assist_intent() -> rx.Component:
 app._api.routes.append(Route(mcp_endpoint.PATH, mcp_endpoint.endpoint, methods=["GET", "POST", "DELETE"]))
 app._api.routes.append(Route(session.NEXT_PATH, session.next_message, methods=["GET"]))
 app._api.routes.append(Route(session.REPLY_PATH, session.reply, methods=["POST"]))
+app._api.routes.append(Route(session.ACTIVITY_PATH, session.activity, methods=["POST"]))
 app.register_lifespan_task(mcp_endpoint.lifespan)
