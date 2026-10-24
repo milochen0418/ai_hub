@@ -258,6 +258,8 @@ class AssistantState(rx.State):
     messages: list[dict[str, str]] = []
     draft: str = ""
     busy: bool = False
+    # While busy: how it goes (e.g. "Claude Code is working · 4 min · 12 steps · last step 8 s ago").
+    status: str = ""
     role: str = "smart"
     app: str = ""
     room: str = ""
@@ -287,6 +289,13 @@ class AssistantState(rx.State):
         self.messages = []
         self.model = ""
         self.ask_passcode = False
+        self._unstick()
+
+    def _unstick(self) -> None:
+        """A chat cut off by a restart of the hub (its task gone with the process) left this tab
+        busy for good: free it."""
+        if self.busy and self._chat_id not in _CHATS:
+            self.busy, self.status = False, ""
 
     @rx.event
     def new_chat(self):
@@ -309,6 +318,7 @@ class AssistantState(rx.State):
         role = str(params.get("role") or self.role)
         if (app, room) != (self.app, self.room):
             self._new_chat()
+        self._unstick()
         self.app, self.room = app, room
         if role in config.ROLES:
             self.role = role
@@ -364,6 +374,8 @@ class AssistantState(rx.State):
                     self.messages.append({"kind": "result" if event["ok"] else "error", "text": event["text"]})
                 elif kind == "error":
                     self.messages.append({"kind": "error", "text": event["text"]})
+                elif kind == "status":
+                    self.status = event["text"]
 
         try:
             await chat.send(text, show)
@@ -372,6 +384,7 @@ class AssistantState(rx.State):
         finally:
             async with self:
                 self.busy = False
+                self.status = ""
 
     @rx.event
     def close_dialog(self):

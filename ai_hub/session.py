@@ -10,7 +10,9 @@ assistant asks for the hub's passcode first; see ``AssistantState``).
 
 One message at a time: the next goes to the session once it has answered the last, so the
 tool calls made with the session's token (``tool_called``/``tool_done``) belong to that chat
-and show in it. State lives in this process, like the rest of the hub's runtime state.
+and show in it. The chat waits as long as the session keeps working, and says how it goes; it
+gives up after IDLE_TIMEOUT without a step, or when the channel stops. State lives in this
+process, like the rest of the hub's runtime state.
 """
 
 from __future__ import annotations
@@ -31,11 +33,16 @@ REPLY_PATH = "/api/session/reply"
 LABEL = "Claude Code (your computer)"
 POLL = 25.0  # seconds a fetch by the channel waits for a message
 SEEN = POLL + 20  # the channel counts as running while it fetched within this many seconds
-TURN_TIMEOUT = 600.0  # seconds the session may take to answer
+# A chat waits for Claude Code as long as it keeps working (a long model takes many builds):
+# it gives up only after this long without a step (a tool call, a note), or when the channel
+# stops (Claude Code was closed). Meanwhile it says how it goes every TICK seconds.
+IDLE_TIMEOUT = 20 * 60.0
+TICK = 5.0
 NOT_RUNNING = (
     "Claude Code on your computer isn't running with the hub's channel: start it there "
     "(see “Claude Code on my computer” on the AI Hub page)."
 )
+STOPPED = "Claude Code on your computer stopped before it answered (was it closed?)."
 
 Event = dict[str, Any]
 
@@ -48,6 +55,11 @@ class _Turn:
     room: str
     events: asyncio.Queue
     delivered: float = 0.0  # when the session got it
+    active: float = 0.0  # the session's last step in this chat
+    steps: int = 0  # its tool calls so far
+
+    def worked(self) -> None:
+        self.active = time.monotonic()
 
 
 _queue: collections.deque[_Turn] = collections.deque()
@@ -87,14 +99,17 @@ async def ask(chat: str, text: str, app: str, room: str, on_event: Callable[[Eve
     try:
         while True:
             try:
-                event = await asyncio.wait_for(turn.events.get(), timeout=5)
+                event = await asyncio.wait_for(turn.events.get(), timeout=TICK)
             except asyncio.TimeoutError:
-                if not turn.delivered and not running():
-                    await on_event({"type": "error", "text": NOT_RUNNING})
+                if not running():
+                    await on_event({"type": "error", "text": STOPPED if turn.delivered else NOT_RUNNING})
                     return
-                if turn.delivered and time.monotonic() - turn.delivered > TURN_TIMEOUT:
-                    await on_event({"type": "error", "text": "Claude Code didn't answer within 10 minutes."})
+                now = time.monotonic()
+                if turn.delivered and now - turn.active > IDLE_TIMEOUT:
+                    minutes = f"{IDLE_TIMEOUT / 60:.0f}"
+                    await on_event({"type": "error", "text": f"Claude Code did nothing for {minutes} minutes, so this chat stopped waiting."})
                     return
+                await on_event({"type": "status", "text": _status(turn, now)})
                 continue
             if event["type"] == "done":
                 return
@@ -107,16 +122,32 @@ async def ask(chat: str, text: str, app: str, room: str, on_event: Callable[[Eve
             await _changed()
 
 
+def _span(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s} s" if s < 60 else f"{s // 60} min"
+
+
+def _status(turn: _Turn, now: float) -> str:
+    """How the chat goes, for the person waiting."""
+    if not turn.delivered:
+        return "Waiting for Claude Code (it is still on an earlier message)"
+    steps = f"{turn.steps} step" + ("" if turn.steps == 1 else "s")
+    return f"Claude Code is working · {_span(now - turn.delivered)} · {steps} · last step {_span(now - turn.active)} ago"
+
+
 async def tool_called(token_id: str, name: str, args: dict[str, Any]) -> None:
     """A tool call through the MCP address: shown in the chat when the session made it."""
     turn = _current
     if turn is not None and token_id and token_id == config.session_token_id():
+        turn.steps += 1
+        turn.worked()
         await turn.events.put({"type": "tool", "name": name, "app": "", "args": args})
 
 
 async def tool_done(token_id: str, name: str, result: calls.Result) -> None:
     turn = _current
     if turn is not None and token_id and token_id == config.session_token_id():
+        turn.worked()
         text = "a picture" if result.image else result.text()[:300]
         await turn.events.put({"type": "result", "name": name, "ok": result.ok, "text": text})
 
@@ -155,7 +186,7 @@ async def next_message(request: Request) -> Response:
         if await request.is_disconnected():
             return Response(status_code=204)
         turn = _current = _queue.popleft()
-    turn.delivered = _seen = time.monotonic()
+    turn.delivered = turn.active = _seen = time.monotonic()
     return JSONResponse({"chat": turn.chat, "text": turn.text, "app": turn.app, "room": turn.room})
 
 
@@ -173,6 +204,7 @@ async def reply(request: Request) -> Response:
     turn = _current
     if turn is None or turn.chat != chat:
         return JSONResponse({"error": f"no chat {chat!r} is waiting for an answer"}, status_code=404)
+    turn.worked()
     if text:
         await turn.events.put({"type": "text", "text": text})
     if done:

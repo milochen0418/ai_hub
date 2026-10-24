@@ -443,7 +443,15 @@ def chat_view(dialog: bool = False) -> rx.Component:
                 ),
             ),
             rx.foreach(AssistantState.messages, message_row),
-            rx.cond(AssistantState.busy, rx.el.div("…", class_name="self-start text-slate-400 animate-pulse pl-2")),
+            rx.cond(
+                AssistantState.busy,
+                rx.el.div(
+                    rx.el.span(class_name="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0"),
+                    rx.el.span(rx.cond(AssistantState.status != "", AssistantState.status, "…")),
+                    id="assistant-status",
+                    class_name="shrink-0 self-start flex items-center gap-2 text-xs text-slate-500 pl-2",
+                ),
+            ),
             class_name="flex flex-col gap-2 overflow-y-auto flex-1 min-h-[240px] py-2",
             id="assistant-messages",
         ),
@@ -469,7 +477,10 @@ if (!window.__assistantChat) {
   document.addEventListener('keydown', (e) => {
     const el = document.getElementById('assistant-input');
     if (e.target === el && e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
-      e.preventDefault(); el.form && el.form.requestSubmit();
+      e.preventDefault();
+      // While the assistant works, Send is off: keep what was typed rather than clear it.
+      const send = el.form && el.form.querySelector('button[type="submit"]');
+      if (el.form && !(send && send.disabled)) el.form.requestSubmit();
     }
   });
   // New messages scroll into view, unless the person scrolled up to read.

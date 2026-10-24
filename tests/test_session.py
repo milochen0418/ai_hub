@@ -191,3 +191,62 @@ async def test_its_tool_calls_through_the_mcp_address_show_in_the_chat(monkeypat
 
     shown = [turn.events.get_nowait() for _ in range(turn.events.qsize())]
     assert [e["type"] for e in shown] == ["tool", "result"] and shown[1]["ok"] is True
+
+
+async def test_while_it_works_the_chat_waits_and_says_how_it_goes(monkeypatch) -> None:
+    monkeypatch.setattr(session, "TICK", 0.05)
+    monkeypatch.setattr(session, "IDLE_TIMEOUT", 0.3)
+    token = config.make_session_token()
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    async with channel(token) as http:
+        await http.get(session.NEXT_PATH)
+        asking = asyncio.create_task(session.ask("c1", "build a cathedral", "cad", "r1", show))
+        await http.get(session.NEXT_PATH)
+        for _ in range(8):  # longer than IDLE_TIMEOUT in all, with a step every 0.1 s
+            await session.tool_called(config.session_token_id(), "cad_run_preview", {})
+            await asyncio.sleep(0.1)
+        await http.post(session.REPLY_PATH, json={"chat": "c1", "text": "Done."})
+        await asyncio.wait_for(asking, 5)
+
+    assert "error" not in [e["type"] for e in events] and events[-1] == {"type": "text", "text": "Done."}
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert statuses and statuses[-1].startswith("Claude Code is working") and "8 steps" in statuses[-1]
+
+
+async def test_after_a_long_silence_the_chat_stops_waiting(monkeypatch) -> None:
+    monkeypatch.setattr(session, "TICK", 0.05)
+    monkeypatch.setattr(session, "IDLE_TIMEOUT", 0.2)
+    token = config.make_session_token()
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    async with channel(token) as http:
+        await http.get(session.NEXT_PATH)
+        asking = asyncio.create_task(session.ask("c1", "x", "", "", show))
+        await http.get(session.NEXT_PATH)
+        await asyncio.wait_for(asking, 5)
+        assert session._current is None, "the next message may go"
+    assert events[-1]["type"] == "error" and "did nothing" in events[-1]["text"]
+
+
+async def test_when_claude_code_is_closed_the_chat_says_so(monkeypatch) -> None:
+    monkeypatch.setattr(session, "TICK", 0.05)
+    token = config.make_session_token()
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    async with channel(token) as http:
+        await http.get(session.NEXT_PATH)
+        asking = asyncio.create_task(session.ask("c1", "x", "", "", show))
+        await http.get(session.NEXT_PATH)
+        session._seen = float("-inf")  # the channel stopped fetching: Claude Code is gone
+        await asyncio.wait_for(asking, 5)
+    assert events[-1] == {"type": "error", "text": session.STOPPED}
