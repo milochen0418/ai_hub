@@ -451,15 +451,15 @@ def chat_view(dialog: bool = False) -> rx.Component:
         rx.el.form(
             rx.el.textarea(
                 placeholder="Message the assistant (Enter sends, Shift+Enter breaks the line)",
-                value=AssistantState.draft,
-                on_change=AssistantState.set_draft,
+                # Not bound to the state: a value echoed back while typing breaks IME composition.
+                name="draft",
                 rows=2,
                 id="assistant-input",
                 class_name=INPUT + " flex-1 resize-none",
             ),
             rx.el.button("Send", type="submit", disabled=AssistantState.busy, class_name=BUTTON),
-            on_submit=lambda _: AssistantState.send(),
-            reset_on_submit=False,
+            on_submit=AssistantState.send,
+            reset_on_submit=True,
             class_name="flex gap-2 items-end",
         ),
         rx.script(
@@ -468,7 +468,7 @@ if (!window.__assistantChat) {
   window.__assistantChat = true;
   document.addEventListener('keydown', (e) => {
     const el = document.getElementById('assistant-input');
-    if (e.target === el && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    if (e.target === el && e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault(); el.form && el.form.requestSubmit();
     }
   });

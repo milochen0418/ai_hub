@@ -324,8 +324,11 @@ class AssistantState(rx.State):
         self.passcode, self.passcode_note = "", "Wrong passcode."
 
     @rx.event(background=True)
-    async def send(self):
+    async def send(self, form_data: dict | None = None):
+        """The form's text (or, after the passcode, the message kept while it was asked)."""
         async with self:
+            if form_data is not None:
+                self.draft = str(form_data.get("draft") or "")
             text = self.draft.strip()
             if not text or self.busy:
                 return
