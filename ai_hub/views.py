@@ -269,8 +269,9 @@ def session_card() -> rx.Component:
         rx.el.h2("Claude Code on my computer (for development)", class_name=H2),
         rx.el.p(
             "The assistant can hand what you type to the Claude Code you run on your own computer, signed in "
-            "to your own Claude plan: it does the work with the apps' tools, and its answers show in the "
-            "assistant. The hub only passes the messages on; it never holds your Claude login.",
+            "to your own Claude plan: it looks things up on the web when the task needs it, does the work "
+            "with the apps' tools, and its answers show in the assistant. The hub only passes the messages "
+            "on; it never holds your Claude login.",
             class_name=MUTED,
         ),
         rx.el.div(

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Starts Claude Code with the AI Hub's channel (set up by setup.sh): what you type into the
-# hub's assistant arrives in this session, and Claude answers there. The session has only the
-# apps' tools and the channel's reply: no files, no shell. Extra arguments go to claude
+# hub's assistant arrives in this session, and Claude answers there. The session has the apps'
+# tools, the channel's reply, and web search and fetching pages (WebSearch, WebFetch), to look
+# things up before it works: no files, no shell. Extra arguments go to claude
 # (e.g. --model sonnet).
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE="$(command -v claude || true)"
@@ -13,5 +14,5 @@ fi
 cd "$DIR" || exit 1
 exec "$CLAUDE" --dangerously-load-development-channels server:ai-hub \
   --strict-mcp-config --mcp-config "$DIR/mcp.json" \
-  --tools "" --allowedTools "mcp__apps mcp__ai-hub" \
+  --tools "WebSearch,WebFetch" --allowedTools "mcp__apps mcp__ai-hub WebSearch WebFetch" \
   --name "AI Hub" "$@"

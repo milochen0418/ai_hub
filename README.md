@@ -119,7 +119,11 @@ company, a product, or anyone else uses an API key instead ("Claude" above), as
 3. Each time you want it, start Claude Code with the channel, in a terminal (VS Code's is fine):
    `~/.local/share/ai_hub/claude-session/start.sh`. The first time, choose "Yes, I trust this
    folder"; each time, "I am using this for local development". The session gets the apps'
-   tools and the channel's `reply`, and nothing else: no files, no shell.
+   tools, the channel's `reply`, and web search and fetching pages (`WebSearch`, `WebFetch`), so
+   it can look things up before it works ("find what the inside of the Sagrada Família looks like,
+   then build it"), and nothing else: no files, no shell. A web page can try to steer what it
+   does; at worst that is a change in the app it works in, and it is told to treat pages as
+   information only. To keep it off the web, start it with `--tools ""` in `start.sh`.
 4. Under Models, set a role (`smart`, say) to "Claude Code on my computer". The assistant then
    says when that Claude Code isn't running.
 
