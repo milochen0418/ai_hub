@@ -4,10 +4,11 @@ how the hub lists any provider's models, Ollama's included (``/v1/models``)."""
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Sequence
 
 import httpx
 
+from ai_hub.attachments import Part
 from ai_hub.brains import Step, ToolCall, text_only
 from ai_hub.calls import Result
 from ai_hub.config import Provider
@@ -57,14 +58,28 @@ def _function(t: Tool) -> dict[str, Any]:
 
 
 class OpenAICompatConversation:
+    sees_images = True
+    reads_pdf = False
+
     def __init__(self, provider: Provider, model: str, system: str) -> None:
         self.provider = provider
         self.model = model
         self.label = f"{'Ollama' if provider.local else provider.name} ({model})"
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
 
-    def add_user(self, text: str) -> None:
-        self.messages.append({"role": "user", "content": text})
+    def add_user(self, text: str, parts: Sequence[Part] = ()) -> None:
+        if not parts:
+            self.messages.append({"role": "user", "content": text})
+            return
+        content: list[dict[str, Any]] = []
+        for p in parts:  # the files first, what the person asks after them
+            if p.image is not None:
+                content.append({"type": "image_url", "image_url": {"url": f"data:{p.image[0]};base64,{p.image[1]}"}})
+            elif p.text:
+                content.append({"type": "text", "text": p.text})
+        if text:
+            content.append({"type": "text", "text": text})
+        self.messages.append({"role": "user", "content": content})
 
     async def step(self, tools: list[Tool]) -> Step:
         body: dict[str, Any] = {"model": self.model, "messages": self.messages}

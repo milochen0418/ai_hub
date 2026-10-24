@@ -1,4 +1,5 @@
-"""The assistant's loop (a fake model), Ollama's requests, and Claude's history rule after a fallback."""
+"""The assistant's loop (a fake model), Ollama's requests, Claude's history rule after a fallback,
+and how each kind of model is given the files attached to a message."""
 
 from __future__ import annotations
 
@@ -9,9 +10,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from ai_hub import agent, brains, calls, config, registry
+from ai_hub import agent, attachments, brains, calls, config, registry
 from ai_hub.brains import ollama
-from ai_hub.brains.claude import _echo
+from ai_hub.brains.claude import ClaudeConversation, _echo
+from ai_hub.brains.openai_compat import OpenAICompatConversation
+from tests.test_attachments import keep, pdf_bytes, png_bytes
 
 TOOL = registry.Tool(
     app="cad",
@@ -27,15 +30,19 @@ OTHER = registry.Tool(app="grid", name="grid.read", title="Read", description=""
 
 class FakeConversation:
     label = "Fake (test-model)"
+    sees_images = True
+    reads_pdf = False
 
     def __init__(self, steps):
         self.steps = list(steps)
         self.users: list[str] = []
+        self.parts: list[list[attachments.Part]] = []
         self.results: list = []
         self.tools_seen: list[list[str]] = []
 
-    def add_user(self, text):
+    def add_user(self, text, parts=()):
         self.users.append(text)
+        self.parts.append(list(parts))
 
     async def step(self, tools):
         self.tools_seen.append([t.public_name for t in tools])
@@ -178,9 +185,102 @@ async def test_a_model_that_stops_without_a_word_is_shown(world, monkeypatch) ->
     assert events[-1] == {"type": "error", "text": "The model stopped without a reply."}
 
 
+async def test_files_go_with_the_message(world, monkeypatch) -> None:
+    fake = FakeConversation([brains.Step(text="A red square.")])
+
+    async def fake_conversation(role, system):
+        return fake
+
+    monkeypatch.setattr(brains, "conversation", fake_conversation)
+    events = []
+
+    async def on_event(e):
+        events.append(e)
+
+    picture = keep("red.png", png_bytes(), "image/png")
+    await agent.Chat("smart", agent.Scope(), user="u").send("what is this?", on_event, [picture])
+
+    assert fake.users == ["what is this?"]
+    about, shown = fake.parts[0]
+    assert about.text.startswith("red.png (a picture, 40×30, ") and shown.image[0] == "image/jpeg"
+    assert not any(e["type"] == "info" for e in events)
+
+
+async def test_a_model_that_cant_see_pictures_gets_the_text_and_the_person_is_told(world, monkeypatch) -> None:
+    fake = FakeConversation([brains.Step(text="I can't see it.")])
+    fake.sees_images = False
+
+    async def fake_conversation(role, system):
+        return fake
+
+    monkeypatch.setattr(brains, "conversation", fake_conversation)
+    events = []
+
+    async def on_event(e):
+        events.append(e)
+
+    await agent.Chat("smart", agent.Scope(), user="u").send("", on_event, [keep("red.png", png_bytes(), "image/png")])
+
+    assert any(e["type"] == "info" and "can't see pictures" in e["text"] for e in events)
+
+
+def test_claude_gets_the_pictures_and_a_pdf_as_it_is_before_the_question() -> None:
+    convo = ClaudeConversation(config.Provider("anthropic", "anthropic", "", "key"), "claude-opus-5-5", "system")
+    files = [keep("red.png", png_bytes(), "image/png"), keep("plan.pdf", pdf_bytes(["Ground floor"]), "application/pdf")]
+
+    convo.add_user("build this", attachments.parts(files, pdf=convo.reads_pdf))
+
+    content = convo.messages[0]["content"]
+    assert [b["type"] for b in content] == ["text", "image", "text", "document", "text"]
+    assert content[3]["source"]["media_type"] == "application/pdf" and content[-1]["text"] == "build this"
+    convo.add_user("and now?")
+    assert convo.messages[-1] == {"role": "user", "content": "and now?"}
+
+
+def test_openai_gets_pictures_as_data_urls() -> None:
+    convo = OpenAICompatConversation(config.Provider("openai", "openai", "https://api.openai.com/v1", "key"), "gpt-x", "system")
+
+    convo.add_user("what is this?", attachments.parts([keep("red.png", png_bytes(), "image/png")]))
+
+    content = convo.messages[-1]["content"]
+    assert [c["type"] for c in content] == ["text", "image_url", "text"]
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_ollama_sends_pictures_only_to_models_that_see() -> None:
+    provider = config.Provider("ollama", "ollama", "http://ollama:11434/v1", "ollama")
+    parts = attachments.parts([keep("red.png", png_bytes(), "image/png")])
+
+    seeing = ollama.OllamaConversation(provider, "qwen2.5vl:7b", "system", vision=True)
+    seeing.add_user("what is this?", parts)
+    blind = ollama.OllamaConversation(provider, "qwen2.5:7b", "system")
+    blind.add_user("what is this?", parts)
+
+    assert len(seeing.messages[-1]["images"]) == 1 and seeing.messages[-1]["content"].endswith("what is this?")
+    assert "images" not in blind.messages[-1] and "can't be shown to you" in blind.messages[-1]["content"]
+
+
+async def test_ollama_says_which_models_see(monkeypatch) -> None:
+    def answer(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content)["model"]
+        return httpx.Response(200, json={"capabilities": ["completion", "vision"] if "vl" in model else ["completion", "tools"]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+    provider = config.Provider("ollama", "ollama", "http://ollama:11434/v1", "ollama")
+
+    assert await ollama.sees_images(provider, "qwen2.5vl:7b") is True
+    assert await ollama.sees_images(provider, "qwen2.5:7b") is False
+
+
 async def test_ollama_roles_use_ollamas_own_api(monkeypatch) -> None:
     provider = config.providers({"providers": {"ollama": {"url": "http://ollama:11434"}}})["ollama"]
     monkeypatch.setattr(config, "resolve", lambda role: (provider, "qwen2.5:7b"))
+
+    async def blind(provider, model):
+        return False
+
+    monkeypatch.setattr(ollama, "sees_images", blind)
 
     convo = await brains.conversation("smart", "system")
 

@@ -13,6 +13,7 @@
     "mergician": "v2.0.2",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-dropzone": "17.0.0",
     "react-error-boundary": "6.1.6",
     "react-helmet": "6.1.0",
     "react-router": "8.4.0",

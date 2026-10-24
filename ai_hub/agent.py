@@ -3,7 +3,8 @@
 Ollama and the model APIs only answer; the assistant gives them the apps' tools and runs the
 loop: the model asks for tools, the hub calls them (``ai_hub.calls``, for the person who asked),
 hands back the results, and asks again, until the model is done. People see each step in their
-apps as it happens. ``Chat`` keeps one conversation going across messages.
+apps as it happens. ``Chat`` keeps one conversation going across messages. Files the person
+attaches go with their message, as what the model can take of them (``ai_hub.attachments``).
 
 A role set to the Claude Code on the owner's computer is the exception: that is an agent with
 a loop of its own, so the message goes to it (``ai_hub.session``) and its steps come back.
@@ -11,11 +12,12 @@ a loop of its own, so the message goes to it (``ai_hub.session``) and its steps 
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import secrets
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
-from ai_hub import brains, calls, config, registry, session
+from ai_hub import attachments, brains, calls, config, registry, session
 
 MAX_STEPS = 24
 
@@ -76,11 +78,16 @@ class Chat:
             return ""
         return f"\n\nThe app's guide (read for you already: no need to call {guide.public_name}):\n{result.text()}"
 
-    async def send(self, text: str, on_event: Callable[[Event], Awaitable[None]]) -> None:
-        """Works on the person's message until the model is done, reporting each step."""
+    async def send(
+        self,
+        text: str,
+        on_event: Callable[[Event], Awaitable[None]],
+        files: Sequence[attachments.Attachment] = (),
+    ) -> None:
+        """Works on the person's message (and its files) until the model is done, reporting each step."""
         provider, _ = config.resolve(self.role)
         if provider.kind == "session":
-            await session.ask(self.id, text, self.scope.app, self.scope.room, on_event)
+            await session.ask(self.id, text, self.scope.app, self.scope.room, on_event, files)
             return
         tools = await self._tools()
         if self.conversation is None:
@@ -88,7 +95,17 @@ class Chat:
             self.conversation = await brains.conversation(self.role, SYSTEM + self.scope.note() + guide)
             await on_event({"type": "model", "text": self.conversation.label})
         by_name = {t.public_name: t for t in tools}
-        self.conversation.add_user(text)
+        parts: list[attachments.Part] = []
+        if files:
+            await on_event({"type": "status", "text": "Getting the files ready for the model"})
+            parts = await asyncio.to_thread(attachments.parts, files, self.conversation.reads_pdf)
+            if not self.conversation.sees_images and any(p.image is not None for p in parts):
+                await on_event({
+                    "type": "info",
+                    "text": f"{self.conversation.label} can't see pictures, so it gets only the files' text. "
+                    "For pictures, set the role to a model that sees them on the AI Hub page.",
+                })
+        self.conversation.add_user(text, parts)
         for _ in range(MAX_STEPS):
             step = await self.conversation.step(tools)
             if step.refused:

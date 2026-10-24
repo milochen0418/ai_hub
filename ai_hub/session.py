@@ -18,6 +18,11 @@ without an answer (the chat then shows what it last wrote), fails, or is closed.
 the hub can't tell long thinking from a forgotten message: the chat then gives up after
 IDLE_TIMEOUT without a step. State lives in this process, like the rest of the hub's runtime
 state.
+
+Files the owner attaches go with the message as a list (id and what each is); the session opens
+them with the channel's ``attachment`` tool, which fetches what an AI is shown of one
+(``ai_hub.attachments``) from ``ATTACHMENT_PATH``. That way the session still has no access to
+files on the owner's computer, and sees only the files of its own messages.
 """
 
 from __future__ import annotations
@@ -26,16 +31,21 @@ import asyncio
 import collections
 import dataclasses
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from ai_hub import calls, config
+from ai_hub import attachments, calls, config
 
 NEXT_PATH = "/api/session/next"
 REPLY_PATH = "/api/session/reply"
 ACTIVITY_PATH = "/api/session/activity"
+ATTACHMENT_PATH = "/api/session/attachment"
+# The channel says which it is (``CHANNEL_HEADER``) when it fetches a message: from 2 on, it opens
+# attached files.
+CHANNEL_HEADER = "x-ai-hub-channel"
+FILES_CHANNEL = 2
 LABEL = "Claude Code (your computer)"
 POLL = 25.0  # seconds a fetch by the channel waits for a message
 SEEN = POLL + 20  # the channel counts as running while it fetched within this many seconds
@@ -54,6 +64,10 @@ NOT_RUNNING = (
 )
 STOPPED = "Claude Code on your computer stopped before it answered (was it closed?)."
 CLEARED = "Claude Code on your computer started a new conversation (/clear) before it answered."
+OLD_CHANNEL = (
+    "Claude Code on your computer runs the hub's channel from before attachments, so it can't open "
+    "these files: restart it (start.sh) to get the new channel. The message goes without them."
+)
 NO_ANSWER = "Claude Code ended its turn without answering here."
 LAST_WORDS = NO_ANSWER + " What it last wrote in its terminal:"
 WAITING = ("permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input")
@@ -69,6 +83,7 @@ class _Turn:
     app: str
     room: str
     events: asyncio.Queue
+    files: Sequence[attachments.Attachment] = ()
     delivered: float = 0.0  # when the session got it
     active: float = 0.0  # the session's last step in this chat
     steps: int = 0  # its tool calls so far (the apps' and its own, such as web searches)
@@ -97,6 +112,7 @@ class _Turn:
 _queue: collections.deque[_Turn] = collections.deque()
 _current: _Turn | None = None  # the turn the session is working on
 _seen = float("-inf")  # when the channel last fetched
+_channel = 0  # which channel that was (CHANNEL_HEADER; 1 before it said)
 _settling = 0.0  # when it answered, while the end of its turn is still to come
 _prompt = ""  # the prompt_id of its latest hook event: the turn it is on
 _cond: asyncio.Condition | None = None
@@ -120,14 +136,26 @@ def running() -> bool:
     return time.monotonic() - _seen < SEEN
 
 
-async def ask(chat: str, text: str, app: str, room: str, on_event: Callable[[Event], Awaitable[None]]) -> None:
-    """Hands a message to the session and reports its tool calls and answers until it is done."""
+async def ask(
+    chat: str,
+    text: str,
+    app: str,
+    room: str,
+    on_event: Callable[[Event], Awaitable[None]],
+    files: Sequence[attachments.Attachment] = (),
+) -> None:
+    """Hands a message (and its files) to the session and reports its tool calls and answers
+    until it is done."""
     global _current
     if not running():
         await on_event({"type": "error", "text": NOT_RUNNING})
         return
     await on_event({"type": "model", "text": LABEL})
-    turn = _Turn(chat, text, app, room, asyncio.Queue())
+    if files and _channel < FILES_CHANNEL:
+        await on_event({"type": "info", "text": OLD_CHANNEL})
+        files = ()
+    attachments.give_to_session(files)
+    turn = _Turn(chat, text, app, room, asyncio.Queue(), files)
     _queue.append(turn)
     await _changed()
     try:
@@ -334,10 +362,12 @@ def _denied() -> Response:
 
 async def next_message(request: Request) -> Response:
     """For the channel: the next message for the session, or 204 when none came within POLL."""
-    global _current, _seen
+    global _current, _seen, _channel
     if not _is_session(request):
         return _denied()
     _seen = time.monotonic()
+    said = request.headers.get(CHANNEL_HEADER, "")
+    _channel = int(said) if said.isdigit() else 1
     deadline = _seen + POLL
     cond = _condition()
     async with cond:
@@ -355,7 +385,10 @@ async def next_message(request: Request) -> Response:
         turn = _current = _queue.popleft()
     turn.delivered = turn.active = turn.since = _seen = time.monotonic()
     turn.before = _prompt
-    return JSONResponse({"chat": turn.chat, "text": turn.text, "app": turn.app, "room": turn.room})
+    message = {"chat": turn.chat, "text": turn.text, "app": turn.app, "room": turn.room}
+    if turn.files:
+        message["files"] = [{"id": f.id, "about": f.about()} for f in turn.files]
+    return JSONResponse(message)
 
 
 async def reply(request: Request) -> Response:
@@ -403,6 +436,34 @@ async def drop(chat: str) -> None:
         await turn.events.put({"type": "done"})
     if turns:
         await _changed()
+
+
+async def attachment(request: Request) -> Response:
+    """For the channel's ``attachment`` tool: what an AI is shown of a file the session was given
+    (``?id=``, and ``pages``, ``span`` or ``offset`` for a part of it), as MCP tool content. It
+    shows in the chat the session works on, like the apps' tools."""
+    if not _is_session(request):
+        return _denied()
+    query = request.query_params
+    att = attachments.get(query.get("id", ""))
+    if att is None or not att.session:
+        return JSONResponse({"error": f"no attached file {query.get('id', '')!r} (they are kept {attachments.KEEP_DAYS} days)"}, status_code=404)
+    pages, span = query.get("pages", ""), query.get("span", "")
+    offset = int(query["offset"]) if query.get("offset", "").isdigit() else 0
+    part = f"pages {pages}" if pages else span or (f"from character {offset:,}" if offset else "")
+    turn = _current
+    if turn is not None:
+        await _note(turn)
+        turn.steps += 1
+        turn.now_doing(f"looking at {att.name}")
+        await turn.events.put({"type": "tool", "name": f"attachment: {att.name}" + (f", {part}" if part else ""), "app": "", "args": {}})
+        await turn.events.put({"type": "status"})
+    parts = await asyncio.to_thread(attachments.view, att, pages, span, offset)
+    if turn is not None and turn is _current:
+        turn.now_doing("")
+        await turn.events.put({"type": "result", "name": "attachment", "ok": True, "text": attachments.summary(parts)})
+        await turn.events.put({"type": "status"})
+    return JSONResponse({"content": attachments.mcp_content(parts)})
 
 
 async def activity(request: Request) -> Response:

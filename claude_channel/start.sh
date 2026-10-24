@@ -1,8 +1,9 @@
 #!/bin/sh
 # Starts Claude Code with the AI Hub's channel (set up by setup.sh): what you type into the
 # hub's assistant arrives in this session, and Claude answers there. The session has the apps'
-# tools, the channel's reply, and web search and fetching pages (WebSearch, WebFetch), to look
-# things up before it works: no files, no shell. Extra arguments go to claude
+# tools, the channel's reply and attachment (the files attached to its messages), and web search
+# and fetching pages (WebSearch, WebFetch), to look things up before it works: no files on this
+# computer, no shell. Extra arguments go to claude
 # (e.g. --model sonnet).
 DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE="$(command -v claude || true)"

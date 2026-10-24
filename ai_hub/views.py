@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import reflex as rx
+from reflex.event import EventSpec
 
-from ai_hub import config
-from ai_hub.states import SESSION_CHOICE, AssistantState, HubState
+from ai_hub import attachments, config
+from ai_hub.states import DROP_ID, PICK_ID, SESSION_CHOICE, AssistantState, HubState
 
 CARD = "bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-col gap-3"
 H2 = "text-base font-semibold text-slate-800"
@@ -369,11 +370,53 @@ def hub_page() -> rx.Component:
     )
 
 
+def file_picture(f: rx.Var) -> rx.Component:
+    """A file's thumbnail, or a plain mark for files without one."""
+    return rx.cond(
+        f["thumb"] != "",
+        rx.el.img(src=f["thumb"], alt="", class_name="h-9 w-9 object-cover rounded shrink-0"),
+        rx.el.div(rx.icon("file-text", size=18), class_name="h-9 w-9 flex items-center justify-center rounded bg-slate-100 text-slate-500 shrink-0"),
+    )
+
+
+def file_label(name: rx.Var, details: rx.Var) -> rx.Component:
+    return rx.el.div(
+        rx.el.span(name, class_name="text-xs font-medium text-slate-700 truncate"),
+        rx.el.span(details, class_name="text-[11px] text-slate-500 truncate"),
+        class_name="flex flex-col min-w-0",
+    )
+
+
+def file_chip(f: rx.Var) -> rx.Component:
+    """A file waiting to go with the next message."""
+    return rx.el.div(
+        file_picture(f),
+        file_label(f["name"], f["details"]),
+        rx.el.button(
+            "×",
+            type="button",
+            title="Remove",
+            on_click=AssistantState.remove_file(f["id"]),
+            class_name="text-slate-400 hover:text-slate-700 text-base leading-none px-1",
+        ),
+        class_name="flex items-center gap-2 max-w-[260px] bg-white border border-slate-200 rounded-lg p-1 pr-1.5",
+    )
+
+
 def message_row(m: rx.Var) -> rx.Component:
     # shrink-0: once the list scrolls, flex would squeeze the truncated rows to nothing.
     return rx.match(
         m["kind"],
         ("user", rx.el.div(m["text"], class_name="shrink-0 self-end max-w-[80%] bg-emerald-600 text-white rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap")),
+        # A file that went with the person's message.
+        (
+            "file",
+            rx.el.div(
+                file_picture(m),
+                file_label(m["text"], m["details"]),
+                class_name="shrink-0 self-end flex items-center gap-2 max-w-[80%] bg-emerald-50 border border-emerald-200 rounded-xl p-1 pr-3",
+            ),
+        ),
         ("assistant", rx.el.div(m["text"], class_name="shrink-0 self-start max-w-[85%] bg-white border border-slate-200 rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap")),
         ("tool", rx.el.div("⚙ " + m["text"], class_name="shrink-0 self-start text-xs font-mono text-slate-500 pl-2")),
         # What Claude Code on the owner's computer does besides the apps' tools (ai_hub.session).
@@ -412,8 +455,44 @@ def passcode_prompt() -> rx.Component:
     )
 
 
+def _attach(upload_id: str) -> EventSpec:
+    """Streams the files of an upload area to the hub as they are dropped or picked."""
+    return AssistantState.attach(rx.upload_files_chunk(upload_id=upload_id, on_upload_progress=AssistantState.upload_progress))
+
+
+def pick_button() -> rx.Component:
+    """The paperclip: picks files (an upload area that only clicks; drops go to the chat's)."""
+    return rx.upload.root(
+        rx.el.button(
+            rx.icon("paperclip", size=16),
+            type="button",
+            title="Attach files: pictures, videos, PDFs, documents (or drop them on the chat, or paste a picture)",
+            class_name="h-[38px] px-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-600",
+        ),
+        id=PICK_ID,
+        no_drag=True,
+        max_size=attachments.MAX_BYTES,
+        on_drop=_attach(PICK_ID),
+        class_name="shrink-0",
+    )
+
+
+def pending_files() -> rx.Component:
+    return rx.cond(
+        (AssistantState.files.length() > 0) | (AssistantState.uploading != ""),
+        rx.el.div(
+            rx.foreach(AssistantState.files, file_chip),
+            rx.cond(AssistantState.uploading != "", rx.el.span(AssistantState.uploading, class_name="text-xs text-slate-500 self-center")),
+            id="assistant-pending",
+            class_name="flex flex-wrap gap-2",
+        ),
+    )
+
+
 def chat_view(dialog: bool = False) -> rx.Component:
-    return rx.el.div(
+    # All of it is the drop area for files (it doesn't open the file picker on a click: the
+    # paperclip does).
+    return rx.upload.root(
         rx.el.div(
             rx.el.div(
                 rx.el.span("Assistant", class_name="font-semibold text-slate-800"),
@@ -442,9 +521,10 @@ def chat_view(dialog: bool = False) -> rx.Component:
         rx.el.div(
             rx.cond(
                 AssistantState.messages.length() == 0,
-                rx.el.p(
-                    "Tell me what to do in the apps, e.g. “draw a small table with four legs”.",
-                    class_name="text-sm text-slate-400 self-center pt-8",
+                rx.el.div(
+                    rx.el.p("Tell me what to do in the apps, e.g. “draw a small table with four legs”."),
+                    rx.el.p("Files help too: drop pictures, videos, PDFs or documents here, or paste a picture."),
+                    class_name="text-sm text-slate-400 self-center text-center pt-8 flex flex-col gap-1",
                 ),
             ),
             rx.foreach(AssistantState.messages, message_row),
@@ -461,7 +541,9 @@ def chat_view(dialog: bool = False) -> rx.Component:
             id="assistant-messages",
         ),
         rx.cond(AssistantState.ask_passcode, passcode_prompt()),
+        pending_files(),
         rx.el.form(
+            pick_button(),
             rx.el.textarea(
                 placeholder="Message the assistant (Enter sends, Shift+Enter breaks the line)",
                 # Not bound to the state: a value echoed back while typing breaks IME composition.
@@ -470,7 +552,7 @@ def chat_view(dialog: bool = False) -> rx.Component:
                 id="assistant-input",
                 class_name=INPUT + " flex-1 resize-none",
             ),
-            rx.el.button("Send", type="submit", disabled=AssistantState.busy, class_name=BUTTON),
+            rx.el.button("Send", type="submit", disabled=AssistantState.busy | (AssistantState.uploading != ""), class_name=BUTTON),
             on_submit=AssistantState.send,
             reset_on_submit=True,
             class_name="flex gap-2 items-end",
@@ -488,6 +570,20 @@ if (!window.__assistantChat) {
       if (el.form && !(send && send.disabled)) el.form.requestSubmit();
     }
   });
+  // A picture pasted into the box (a screenshot, say) is attached as if it were dropped. Pasted
+  // text stays text, even when the clipboard also holds a picture of it (as Word's does).
+  document.addEventListener('paste', (e) => {
+    const el = document.getElementById('assistant-input');
+    const data = e.clipboardData;
+    if (e.target !== el || !data || !data.files.length || data.getData('text/plain')) return;
+    const input = document.querySelector('#""" + DROP_ID + """ > input[type=file]');
+    if (!input) return;
+    e.preventDefault();
+    const files = new DataTransfer();
+    Array.from(data.files).forEach((f) => files.items.add(f));
+    input.files = files.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   // New messages scroll into view, unless the person scrolled up to read.
   let height = 0, atEnd = true;
   setInterval(() => {
@@ -502,6 +598,12 @@ if (!window.__assistantChat) {
 }
 """
         ),
+        id=DROP_ID,
+        no_click=True,
+        no_keyboard=True,
+        max_size=attachments.MAX_BYTES,
+        on_drop=_attach(DROP_ID),
+        drag_active_style={"outline": "2px dashed #10b981", "outline_offset": "-2px", "border_radius": "12px", "background": "#ecfdf5"},
         class_name="flex flex-col gap-3 h-full",
     )
 

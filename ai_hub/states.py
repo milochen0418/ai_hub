@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import collections
 import time
 import uuid
 from typing import Any
@@ -10,15 +12,22 @@ from typing import Any
 import reflex as rx
 from reflex_ddns_auth.intent import IntentPage
 
-from ai_hub import agent, calls, config, registry, session
+from ai_hub import agent, attachments, calls, config, registry, session
 from ai_hub.brains import openai_compat
 
 CLAUDE_CHOICES = ["anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"]
 SESSION_CHOICE = f"{config.SESSION}/"
 MIN_PASSCODE = 6
+# The assistant's uploads: files dropped anywhere on the chat (or pasted into its box), and the
+# ones picked with its paperclip button.
+DROP_ID = "assistant-files"
+PICK_ID = "assistant-pick"
 
 # The assistant's conversations, by chat id (a Chat holds clients and model state, not state vars).
 _CHATS: dict[str, agent.Chat] = {}
+# Uploads under way in this process, by tab (client token): one cut off by a restart of the hub
+# must not leave its tab waiting for it.
+_UPLOADS: collections.Counter[str] = collections.Counter()
 
 
 class OwnerState(rx.State):
@@ -268,11 +277,64 @@ class AssistantState(rx.State):
     ask_passcode: bool = False
     passcode: str = ""
     passcode_note: str = ""
+    # Files for the next message, each {"id", "name", "details", "thumb"} (ai_hub.attachments),
+    # and how their upload goes ("" when none is on the way).
+    files: list[dict[str, str]] = []
+    uploading: str = ""
     _chat_id: str = ""
 
     @rx.event
     def set_draft(self, value: str):
         self.draft = value
+
+    @rx.event
+    def upload_progress(self, progress: dict):
+        if _UPLOADS[self.router.session.client_token]:  # not a late one, after the upload ended
+            self.uploading = f"Uploading… {int(float(progress.get('progress') or 0) * 100)}%"
+
+    @rx.event(background=True)
+    async def attach(self, chunks: rx.UploadChunkIterator):
+        """Files dropped, pasted or picked: kept on the hub as they arrive, for the next message."""
+        tab = self.router.session.client_token
+        _UPLOADS[tab] += 1
+        async with self:
+            self.uploading = self.uploading or "Uploading…"
+        incoming: attachments.Incoming | None = None
+        name = ""
+        try:
+            async for chunk in chunks:
+                # A file's pieces come in order, each with its place in the file: 0 begins the next.
+                if incoming is None or chunk.filename != name or (chunk.offset == 0 and incoming.size):
+                    if incoming is not None:
+                        await self._keep(incoming)
+                    name = chunk.filename
+                    incoming = attachments.Incoming(chunk.filename, chunk.content_type)
+                incoming.write(chunk.data)
+            if incoming is not None:
+                await self._keep(incoming)
+                incoming = None
+        except Exception as e:  # noqa: BLE001 — the person sees what went wrong
+            if incoming is not None:
+                incoming.discard()
+            async with self:
+                self.messages.append({"kind": "error", "text": f"{name or 'The file'} didn't arrive: {e}"})
+        finally:
+            _UPLOADS[tab] -= 1
+            if _UPLOADS[tab] <= 0:
+                del _UPLOADS[tab]
+                async with self:
+                    self.uploading = ""
+
+    async def _keep(self, incoming: attachments.Incoming) -> None:
+        att = await asyncio.to_thread(incoming.finish)
+        async with self:
+            self.files.append({"id": att.id, "name": att.name, "details": att.details(), "thumb": att.thumb})
+
+    @rx.event
+    def remove_file(self, file_id: str):
+        if any(f["id"] == file_id for f in self.files):
+            self.files = [f for f in self.files if f["id"] != file_id]
+            attachments.remove(file_id)
 
     @rx.event
     def set_passcode(self, value: str):
@@ -296,10 +358,12 @@ class AssistantState(rx.State):
         self._unstick()
 
     def _unstick(self) -> None:
-        """A chat cut off by a restart of the hub (its task gone with the process) left this tab
-        busy for good: free it."""
+        """A chat or an upload cut off by a restart of the hub (its task gone with the process)
+        left this tab busy for good: free it."""
         if self.busy and self._chat_id not in _CHATS:
             self.busy, self.status = False, ""
+        if self.uploading and not _UPLOADS[self.router.session.client_token]:
+            self.uploading = ""
 
     @rx.event
     async def new_chat(self):
@@ -339,12 +403,13 @@ class AssistantState(rx.State):
 
     @rx.event(background=True)
     async def send(self, form_data: dict | None = None):
-        """The form's text (or, after the passcode, the message kept while it was asked)."""
+        """The form's text and the files attached (or, after the passcode, the message kept while
+        it was asked)."""
         async with self:
             if form_data is not None:
                 self.draft = str(form_data.get("draft") or "")
             text = self.draft.strip()
-            if not text or self.busy:
+            if not (text or self.files) or self.busy or self.uploading:
                 return
             if _uses_session(self.role):
                 if not config.has_passcode():
@@ -356,7 +421,20 @@ class AssistantState(rx.State):
                     return
             self.draft = ""
             self.busy = True
-            self.messages.append({"kind": "user", "text": text})
+            files = []
+            for f in self.files:
+                att = attachments.get(f["id"])
+                if att is None:
+                    self.messages.append({"kind": "error", "text": f"{f['name']} is no longer on the hub (files are kept {attachments.KEEP_DAYS} days): attach it again."})
+                    continue
+                files.append(att)
+                self.messages.append({"kind": "file", "text": f["name"], "details": f["details"], "thumb": f["thumb"]})
+            self.files = []
+            if not (text or files):
+                self.busy = False
+                return
+            if text:
+                self.messages.append({"kind": "user", "text": text})
             if not self._chat_id or self._chat_id not in _CHATS:
                 self._chat_id = uuid.uuid4().hex
             chat_id, role, scope = self._chat_id, self.role, agent.Scope(self.app, self.room)
@@ -384,7 +462,7 @@ class AssistantState(rx.State):
                     self.status = event["text"]
 
         try:
-            await chat.send(text, show)
+            await chat.send(text, show, files)
         except Exception as e:  # noqa: BLE001 — the person sees what went wrong
             await show({"type": "error", "text": f"{type(e).__name__}: {e}"})
         finally:

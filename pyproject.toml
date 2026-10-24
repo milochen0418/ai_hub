@@ -18,6 +18,11 @@ httpx = ">=0.28"
 anthropic = ">=2.2,<3"
 # The MCP address for agents (Streamable HTTP, official SDK).
 mcp = ">=2.3,<3"
+# Files attached in the assistant, made into what models take: pictures (Pillow), PDF pages
+# (pdfium) and video frames (ffmpeg, bundled: the App Store image has none).
+pillow = ">=12"
+pypdfium2 = ">=5,<6"
+imageio-ffmpeg = ">=0.6"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

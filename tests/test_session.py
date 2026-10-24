@@ -1,5 +1,5 @@
 """The Claude Code on the owner's computer: the passcode that keeps it the owner's, and how
-messages, tool calls and answers pass between the assistant and its channel."""
+messages, attached files, tool calls and answers pass between the assistant and its channel."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from mcp.client.streamable_http import streamable_http_client
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from ai_hub import agent, calls, config, mcp_endpoint, registry, session
+from ai_hub import agent, attachments, calls, config, mcp_endpoint, registry, session
+from tests.test_attachments import keep, png_bytes
 
 TOOL = registry.Tool(
     app="cad",
@@ -33,24 +34,26 @@ def fresh_session(monkeypatch):
     monkeypatch.setattr(session, "_queue", collections.deque())
     monkeypatch.setattr(session, "_current", None)
     monkeypatch.setattr(session, "_seen", float("-inf"))
+    monkeypatch.setattr(session, "_channel", 0)
     monkeypatch.setattr(session, "_settling", 0.0)
     monkeypatch.setattr(session, "_prompt", "")
     monkeypatch.setattr(session, "_cond", None)
     monkeypatch.setattr(session, "POLL", 0.5)
 
 
-def channel(token: str) -> httpx.AsyncClient:
-    """The hub's side of the channel, as the channel on the owner's computer reaches it."""
+def channel(token: str, files: bool = True) -> httpx.AsyncClient:
+    """The hub's side of the channel, as the channel on the owner's computer reaches it (one that
+    opens attached files, unless ``files`` is False: one from before them)."""
     app = Starlette(
         routes=[
             Route(session.NEXT_PATH, session.next_message),
             Route(session.REPLY_PATH, session.reply, methods=["POST"]),
             Route(session.ACTIVITY_PATH, session.activity, methods=["POST"]),
+            Route(session.ATTACHMENT_PATH, session.attachment),
         ]
     )
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://hub", headers={"Authorization": f"Bearer {token}"}
-    )
+    headers = {"Authorization": f"Bearer {token}"} | ({session.CHANNEL_HEADER: str(session.FILES_CHANNEL)} if files else {})
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub", headers=headers)
 
 
 async def ignore(event) -> None:
@@ -128,6 +131,58 @@ async def test_a_message_goes_to_the_session_and_its_answer_comes_back() -> None
     assert events[1]["name"] == "cad_set_code" and events[-1]["text"] == "Done: a table."
 
 
+async def test_attached_files_go_to_the_session_which_opens_them() -> None:
+    token = config.make_session_token()
+    picture = keep("red.png", png_bytes(), "image/png")
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    async with channel(token) as http:
+        await http.get(session.NEXT_PATH)
+        asking = asyncio.create_task(session.ask("c1", "paint it this colour", "cad", "r1", show, [picture]))
+        message = (await http.get(session.NEXT_PATH)).json()
+        assert message["files"] == [{"id": picture.id, "about": picture.about()}]
+
+        opened = await http.get(session.ATTACHMENT_PATH, params={"id": picture.id})
+        assert [c["type"] for c in opened.json()["content"]] == ["text", "image"]
+        await http.post(session.REPLY_PATH, json={"chat": "c1", "text": "Painted."})
+        await asyncio.wait_for(asking, 5)
+
+    rows = [e for e in events if e["type"] in ("tool", "result")]
+    assert [r.get("name") for r in rows] == ["attachment: red.png", "attachment"] and rows[1]["text"] == "a picture"
+
+
+async def test_a_channel_from_before_attachments_gets_the_message_without_them() -> None:
+    token = config.make_session_token()
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    async with channel(token, files=False) as http:
+        await http.get(session.NEXT_PATH)
+        asking = asyncio.create_task(session.ask("c1", "look", "", "", show, [keep("red.png", png_bytes(), "image/png")]))
+        assert "files" not in (await http.get(session.NEXT_PATH)).json()
+        await http.post(session.REPLY_PATH, json={"chat": "c1", "text": "ok"})
+        await asyncio.wait_for(asking, 5)
+
+    assert {"type": "info", "text": session.OLD_CHANNEL} in events
+
+
+async def test_the_session_opens_only_the_files_it_was_given() -> None:
+    token = config.make_session_token()
+    given, kept = keep("a.png", png_bytes(), "image/png"), keep("b.png", png_bytes(), "image/png")
+    attachments.give_to_session([given])
+    async with channel(token) as http:
+        assert (await http.get(session.ATTACHMENT_PATH, params={"id": given.id})).status_code == 200
+        assert (await http.get(session.ATTACHMENT_PATH, params={"id": kept.id})).status_code == 404
+        assert (await http.get(session.ATTACHMENT_PATH, params={"id": "../settings"})).status_code == 404
+    async with channel(config.create_token("someone else")) as http:
+        assert (await http.get(session.ATTACHMENT_PATH, params={"id": given.id})).status_code == 401
+
+
 async def test_the_next_message_waits_for_the_answer_to_the_last() -> None:
     token = config.make_session_token()
     async with channel(token) as http:
@@ -168,13 +223,14 @@ async def test_a_role_set_to_claude_code_goes_to_the_session(monkeypatch) -> Non
     config.set_role("smart", f"{config.SESSION}/")
     handed = []
 
-    async def fake_ask(chat, text, app, room, on_event) -> None:
-        handed.append((chat, text, app, room))
+    async def fake_ask(chat, text, app, room, on_event, files=()) -> None:
+        handed.append((chat, text, app, room, list(files)))
 
     monkeypatch.setattr(session, "ask", fake_ask)
     chat = agent.Chat("smart", agent.Scope("cad", "r1"), user="assistant")
-    await chat.send("draw a table", ignore)
-    assert handed == [(chat.id, "draw a table", "cad", "r1")]
+    picture = keep("red.png", png_bytes(), "image/png")
+    await chat.send("draw a table", ignore, [picture])
+    assert handed == [(chat.id, "draw a table", "cad", "r1", [picture])]
 
 
 async def test_its_tool_calls_through_the_mcp_address_show_in_the_chat(monkeypatch) -> None:

@@ -35,4 +35,5 @@ app._api.routes.append(Route(mcp_endpoint.PATH, mcp_endpoint.endpoint, methods=[
 app._api.routes.append(Route(session.NEXT_PATH, session.next_message, methods=["GET"]))
 app._api.routes.append(Route(session.REPLY_PATH, session.reply, methods=["POST"]))
 app._api.routes.append(Route(session.ACTIVITY_PATH, session.activity, methods=["POST"]))
+app._api.routes.append(Route(session.ATTACHMENT_PATH, session.attachment, methods=["GET"]))
 app.register_lifespan_task(mcp_endpoint.lifespan)

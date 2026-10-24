@@ -4,15 +4,17 @@ The conversation keeps Claude's own content blocks and sends them back unchanged
 blocks included, as the API asks. Requests opt into the server-side fallback
 (``fallbacks="default"``): when Claude declines, the API itself retries on the model Anthropic
 recommends for that kind of decline. A picture a tool returns goes to Claude as an image, so it
-sees what it built.
+sees what it built; so do the pictures of the files the person attaches, and a PDF goes as a
+document.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import anthropic
 
+from ai_hub.attachments import Part
 from ai_hub.brains import Step, ToolCall
 from ai_hub.calls import Result
 from ai_hub.config import Provider
@@ -29,6 +31,15 @@ def _tool(t: Tool) -> dict[str, Any]:
     return {"name": t.public_name, "description": f"{t.description}\n\nApp: {t.app}", "input_schema": t.input_schema}
 
 
+def _block(part: Part) -> dict[str, Any]:
+    if part.image is not None:
+        mime, data = part.image
+        return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}
+    if part.pdf:
+        return {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": part.pdf}}
+    return {"type": "text", "text": part.text}
+
+
 def _echo(content: list[Any]) -> list[Any]:
     """The assistant's content to send back: as it came, except that after a mid-output
     fallback the declined model's internal blocks before the switch are left out."""
@@ -39,6 +50,9 @@ def _echo(content: list[Any]) -> list[Any]:
 
 
 class ClaudeConversation:
+    sees_images = True
+    reads_pdf = True
+
     def __init__(self, provider: Provider, model: str, system: str) -> None:
         self.client = anthropic.AsyncAnthropic(api_key=provider.api_key)
         self.model = model
@@ -46,8 +60,13 @@ class ClaudeConversation:
         self.system = system
         self.messages: list[dict[str, Any]] = []
 
-    def add_user(self, text: str) -> None:
-        self.messages.append({"role": "user", "content": text})
+    def add_user(self, text: str, parts: Sequence[Part] = ()) -> None:
+        if not parts:
+            self.messages.append({"role": "user", "content": text})
+            return
+        # The files first, what the person asks after them.
+        content = [_block(p) for p in parts] + ([{"type": "text", "text": text}] if text else [])
+        self.messages.append({"role": "user", "content": content})
 
     async def step(self, tools: list[Tool]) -> Step:
         extra: dict[str, Any] = {"tools": [_tool(t) for t in tools]} if tools else {}

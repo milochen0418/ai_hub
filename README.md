@@ -52,6 +52,34 @@ results, and goes on until the model is done. Opened from an app, it first reads
 `<app>.guide` tool, so even a small local model starts out knowing the app's rules, and a tool
 that takes a `room` works in the room it was opened in when the model leaves `room` out.
 
+### Files
+
+People can give the assistant files with what they type: drop them anywhere on the chat, pick
+them with the paperclip, or paste a picture (a screenshot, say) into the message box. They go
+with the next message, and the hub turns each into what models take, text and pictures
+(`ai_hub/attachments.py`):
+
+| File | What the AI gets |
+|---|---|
+| Picture (JPEG, PNG, WebP, GIF, HEIC, …) | the picture, turned upright, at most 1568 px on its long side |
+| Video | its length, and 8 frames across it (or across a span) with their times; not its sound |
+| PDF | each page's text and a picture of the page, 4 pages at a time; Claude (with a key) reads the PDF itself, up to 100 pages and 32 MB |
+| Text, code, data (CSV, JSON, SVG, STEP, …) | the text (UTF-8, UTF-16 or Big5), 40,000 characters at a time |
+| Word, Excel, PowerPoint (.docx, .xlsx, .pptx) | their text, in the order of the pages, sheets and slides |
+| Anything else, sound included | its name, type and size |
+
+The models get the first part of each file with the message (the first 4 pages of a PDF, the
+first 40,000 characters of a text); the Claude Code on your computer opens the rest as it needs
+it (see below). Models that can't see pictures, such as Ollama's qwen2.5, get only the text, and
+the chat says so: for pictures, set the role to Claude, an OpenAI model, or an Ollama model that
+sees them (Ollama lists `vision` among its capabilities, e.g. qwen2.5vl).
+
+Files are kept on the hub (in `AI_HUB_DATA`) for 7 days, up to 2 GB each
+(`AI_HUB_MAX_ATTACHMENT_MB`). Like what is typed, they go to the model's company when the role
+uses Claude or OpenAI with a key; use the `local` role for files that must stay here. Pictures
+go through Pillow, PDFs through pdfium (`pypdfium2`), videos through the ffmpeg that
+`imageio-ffmpeg` brings, so the container needs nothing else installed.
+
 ## For app developers: offer tools
 
 ```python
@@ -119,15 +147,24 @@ company, a product, or anyone else uses an API key instead ("Claude" above), as
 3. Each time you want it, start Claude Code with the channel, in a terminal (VS Code's is fine):
    `~/.local/share/ai_hub/claude-session/start.sh`. The first time, choose "Yes, I trust this
    folder"; each time, "I am using this for local development". The session gets the apps'
-   tools, the channel's `reply`, and web search and fetching pages (`WebSearch`, `WebFetch`), so
-   it can look things up before it works ("find what the inside of the Sagrada Família looks like,
-   then build it"), and nothing else: no files, no shell. A web page can try to steer what it
+   tools, the channel's `reply` and `attachment` (the files attached to its messages), and web
+   search and fetching pages (`WebSearch`, `WebFetch`), so it can look things up before it works
+   ("find what the inside of the Sagrada Família looks like, then build it"), and nothing else: no
+   files on your computer, no shell. A web page can try to steer what it
    does; at worst that is a change in the app it works in, and it is told to treat pages as
    information only. To keep it off the web, start it with `--tools ""` in `start.sh`.
 4. Under Models, set a role (`smart`, say) to "Claude Code on my computer". The assistant then
    says when that Claude Code isn't running.
 
 One message is worked on at a time; the next waits for the answer to the last.
+
+Files attached to a message reach it as a list (the ids in the `files` attribute of its
+`<channel>` tag). It opens each with the channel's `attachment` tool, which fetches from the hub
+what an AI is shown of the file (see Files above), a part at a time: more pages of a PDF, a span
+of a video, the rest of a long text. It opens only the files of its own messages, and the chat
+shows each one it opens. A session started before the `attachment` tool gets the message without
+the files, and the chat says to restart it: copy `claude_channel/bridge.mjs` into the session
+folder (or run `setup.sh` again) and restart `start.sh`.
 
 While it works, the dialog shows what it does: under the messages, a line says what it is doing now
 ("thinking (max effort) · 12 min", "searching the web: …", "reading …", "using cad_set_code",
