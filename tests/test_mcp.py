@@ -75,6 +75,8 @@ async def test_an_agent_lists_and_calls_the_apps_tools(seen) -> None:
             assert set(by_name) == {"cad_set_code", "cad_snapshot"}
             assert by_name["cad_set_code"].annotations.read_only_hint is False
             assert by_name["cad_snapshot"].annotations.read_only_hint is True
+            # Claude Code reads a long answer (a big model's code) instead of saving it to a file
+            assert by_name["cad_set_code"].meta == {"anthropic/maxResultSizeChars": 500_000}
             assert "App: cad" in by_name["cad_set_code"].description
 
             result = await client.call_tool("cad_set_code", {"code": "x = 1", "room": "r1"})

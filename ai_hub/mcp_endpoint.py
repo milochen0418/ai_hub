@@ -28,6 +28,10 @@ INSTRUCTIONS = (
     "Tools of the apps installed on this re_ddns host, one set per app (the tool names start "
     "with the app's name). What a tool changes, the people using that app see at once."
 )
+# Claude Code saves a text answer over 50,000 characters to a file instead (a big model's code
+# is more), and the hub's own session has no tool to read files: let answers be as long as
+# Claude Code allows.
+MAX_RESULT_CHARS = 500_000
 
 _user: contextvars.ContextVar[str] = contextvars.ContextVar("ai_hub_user", default="")
 _token_id: contextvars.ContextVar[str] = contextvars.ContextVar("ai_hub_token_id", default="")
@@ -45,6 +49,7 @@ def _mcp_tool(t: registry.Tool) -> types.Tool:
             destructive_hint=t.kind == "danger",
             open_world_hint=False,
         ),
+        meta={"anthropic/maxResultSizeChars": MAX_RESULT_CHARS},
     )
 
 
