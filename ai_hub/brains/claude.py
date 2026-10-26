@@ -95,9 +95,9 @@ class ClaudeConversation:
     def add_results(self, results: list[tuple[ToolCall, Result]]) -> None:
         blocks = []
         for call, result in results:
-            if result.ok and result.image is not None:
-                mime, data = result.image
-                content: Any = [{"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}]
+            if result.ok and result.images:
+                content: Any = [{"type": "text", "text": result.text()}] if result.data is not None else []
+                content += [{"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}} for mime, data in result.images]
             else:
                 content = result.text()
             blocks.append({"type": "tool_result", "tool_use_id": call.id, "content": content, "is_error": not result.ok})

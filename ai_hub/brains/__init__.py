@@ -51,8 +51,11 @@ class Conversation(Protocol):
 
 def text_only(result: Result) -> str:
     """A tool's result for a conversation that takes no pictures (only Claude's does)."""
-    if result.ok and result.image is not None:
-        return "(The tool returned a picture, but pictures can't be shown to you here.)"
+    if result.ok and result.images:
+        note = "(The tool returned a picture, but pictures can't be shown to you here.)"
+        if len(result.images) > 1:
+            note = f"(The tool returned {len(result.images)} pictures, but pictures can't be shown to you here.)"
+        return note if result.data is None else f"{result.text()}\n{note}"
     return result.text()
 
 

@@ -69,9 +69,11 @@ async def _call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
     await session.tool_called(_token_id.get(), params.name, args)
     result = await calls.call(tool, args, _user.get() or "agent", via="mcp")
     await session.tool_done(_token_id.get(), params.name, result)
-    if result.image is not None:
-        mime, data = result.image
-        return types.CallToolResult(content=[types.ImageContent(type="image", data=data, mime_type=mime)])
+    if result.ok and result.images:
+        # The words (with "(picture N)" where each was), then the pictures in that order.
+        pictures = [types.ImageContent(type="image", data=data, mime_type=mime) for mime, data in result.images]
+        words = [types.TextContent(type="text", text=result.text())] if result.data is not None else []
+        return types.CallToolResult(content=[*words, *pictures])
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=result.text())],
         structured_content=result.data if result.ok and isinstance(result.data, dict) else None,

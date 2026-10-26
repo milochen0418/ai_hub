@@ -131,7 +131,7 @@ class Chat:
                         "type": "result",
                         "name": call.name,
                         "ok": result.ok,
-                        "text": "a picture" if result.image else result.text()[:300],
+                        "text": result.brief(),
                     }
                 )
                 results.append((call, result))

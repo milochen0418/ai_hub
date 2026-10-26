@@ -237,6 +237,20 @@ def test_claude_gets_the_pictures_and_a_pdf_as_it_is_before_the_question() -> No
     assert convo.messages[-1] == {"role": "user", "content": "and now?"}
 
 
+def test_claude_gets_a_tools_words_and_its_pictures() -> None:
+    convo = ClaudeConversation(config.Provider("anthropic", "anthropic", "", "key"), "claude-opus-5-5", "system")
+    call = brains.ToolCall("t1", "roam_view", {})
+    words = calls.Result(True, {"eyes": 3.2, "picture": "(picture 1)"}, images=[("image/jpeg", "AAAA")])
+    alone = calls.Result(True, None, images=[("image/png", "BBBB")])
+
+    convo.add_results([(call, words), (brains.ToolCall("t2", "cad_snapshot", {}), alone)])
+
+    first, second = convo.messages[-1]["content"]
+    assert [b["type"] for b in first["content"]] == ["text", "image"] and '"eyes": 3.2' in first["content"][0]["text"]
+    assert first["content"][1]["source"] == {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}
+    assert [b["type"] for b in second["content"]] == ["image"]
+
+
 def test_openai_gets_pictures_as_data_urls() -> None:
     convo = OpenAICompatConversation(config.Provider("openai", "openai", "https://api.openai.com/v1", "key"), "gpt-x", "system")
 
@@ -309,9 +323,13 @@ async def test_ollama_gets_a_context_that_holds_the_chat(monkeypatch) -> None:
     assert body["tools"][0]["function"]["name"] == "cad_set_code"
     assert step.calls == [brains.ToolCall("cad_set_code-0", "cad_set_code", {"code": "x"})]
 
-    convo.add_results([(step.calls[0], calls.Result(True, image=("image/png", "AAAA")))])
+    convo.add_results([(step.calls[0], calls.Result(True, images=[("image/png", "AAAA")]))])
     assert convo.messages[-1]["role"] == "tool" and convo.messages[-1]["tool_name"] == "cad_set_code"
     assert "can't be shown" in convo.messages[-1]["content"]  # not "attached": it isn't
+    # Words with pictures: the words, and a note on the pictures.
+    convo.add_results([(step.calls[0], calls.Result(True, {"eyes": 3.2, "picture": "(picture 1)"}, images=[("image/jpeg", "AAAA")]))])
+    content = convo.messages[-1]["content"]
+    assert '"eyes": 3.2' in content and "can't be shown" in content
 
 
 def block(kind: str, **kw):

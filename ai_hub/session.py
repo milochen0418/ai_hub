@@ -238,7 +238,7 @@ async def tool_done(token_id: str, name: str, result: calls.Result) -> None:
     turn = _current
     if turn is not None and token_id and token_id == config.session_token_id():
         turn.now_doing("")
-        text = "a picture" if result.image else result.text()[:300]
+        text = result.brief()
         await turn.events.put({"type": "result", "name": name, "ok": result.ok, "text": text})
         await turn.events.put({"type": "status"})
 
