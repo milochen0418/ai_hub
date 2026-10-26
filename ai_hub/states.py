@@ -1,5 +1,5 @@
-"""The hub's page state (HubState), the assistant's (AssistantState), and the owner's mark
-(OwnerState) that both read."""
+"""The hub's page state (HubState), the assistant's (AssistantState), the talking AI's
+(TalkState), and the owner's mark (OwnerState) that they read."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any
 import reflex as rx
 from reflex_ddns_auth.intent import IntentPage
 
-from ai_hub import agent, attachments, calls, config, registry, session
+from ai_hub import agent, attachments, calls, config, registry, session, talk
 from ai_hub.brains import openai_compat
 
 CLAUDE_CHOICES = ["anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"]
@@ -469,6 +469,175 @@ class AssistantState(rx.State):
             async with self:
                 self.busy = False
                 self.status = ""
+
+    @rx.event
+    def close_dialog(self):
+        return IntentPage.cancel
+
+
+class TalkState(rx.State):
+    """The talking AI (the ``ai.talk`` intent, or /talk): what was said, and what to say next.
+
+    The page's own code (assets/talk.js) hears and speaks: what it hears it types into the form
+    and sends, with what the host page shows now (``context``, asked of the host through the
+    intent bridge); what the model answers lands in ``speech`` (a new ``seq`` each time) and the
+    page reads it out with the mood the reply began with.
+    """
+
+    messages: list[dict[str, str]] = []
+    busy: bool = False
+    status: str = ""
+    role: str = "fast"
+    app: str = ""
+    room: str = ""
+    lang: str = ""
+    model: str = ""
+    # The reply to read out: {"seq", "text", "mood"}.
+    speech: dict[str, str] = {}
+    ask_passcode: bool = False
+    passcode: str = ""
+    passcode_note: str = ""
+    _chat_id: str = ""
+    _seq: int = 0
+    # Said while the model was still answering: goes next, as one message.
+    _queued: list[str] = []
+    # Kept while the passcode is asked.
+    _held: str = ""
+    _held_context: str = ""
+
+    @rx.event
+    def set_passcode(self, value: str):
+        self.passcode = value
+
+    @rx.event
+    async def set_role(self, value: str):
+        if value in config.ROLES and value != self.role:
+            self.role = value
+            await self._new_chat()
+
+    async def _new_chat(self) -> None:
+        chat = _CHATS.pop(self._chat_id, None)
+        if chat is not None:
+            await session.drop(chat.id)
+        self._chat_id = ""
+        self.messages = []
+        self.model = ""
+        self.ask_passcode = False
+        self._queued = []
+        self._unstick()
+
+    def _unstick(self) -> None:
+        if self.busy and self._chat_id not in _CHATS:
+            self.busy, self.status = False, ""
+
+    @rx.event
+    async def new_chat(self):
+        await self._new_chat()
+
+    @rx.event
+    async def on_load(self):
+        """The page: /talk?in_app=cad-roam&room=<id>&lang=zh-TW&role=fast."""
+        await self._open_scope(dict(self.router.url.query_parameters))
+
+    @rx.event
+    async def open_intent(self, params: dict):
+        """Opened from another app as a dialog (the ai.talk intent)."""
+        await self._open_scope(params)
+
+    async def _open_scope(self, params: dict) -> None:
+        app = str(params.get("in_app") or params.get("app") or "")
+        room = str(params.get("room") or "")
+        role = str(params.get("role") or self.role)
+        if (app, room) != (self.app, self.room):
+            await self._new_chat()
+        self._unstick()
+        self.app, self.room = app, room
+        self.lang = str(params.get("lang") or self.lang or "")
+        if role in config.ROLES:
+            self.role = role
+        talk.start()
+
+    @rx.event
+    async def unlock(self):
+        """The hub's passcode, asked before a message goes to the owner's own Claude Code."""
+        if config.check_passcode(self.passcode):
+            owner = await self.get_state(OwnerState)
+            owner.owner_key = config.owner_key()
+            self.ask_passcode, self.passcode, self.passcode_note = False, "", ""
+            held, context = self._held, self._held_context
+            self._held = self._held_context = ""
+            return TalkState.send({"draft": held, "context": context})
+        self.passcode, self.passcode_note = "", "Wrong passcode."
+
+    def _say(self, text: str, mood: str) -> None:
+        self._seq += 1
+        self.speech = {"seq": str(self._seq), "text": text, "mood": mood}
+        self.messages.append({"kind": "assistant", "text": text, "mood": mood})
+
+    @rx.event(background=True)
+    async def send(self, form_data: dict | None = None):
+        """The form's words (typed, or heard by the page) and what the host page shows now."""
+        async with self:
+            form = form_data or {}
+            text = str(form.get("draft") or "").strip()
+            context = talk.context_text(form.get("context") or "")
+            if not text:
+                return
+            if _uses_session(self.role):
+                if not config.has_passcode():
+                    self.messages.append({"kind": "error", "text": "Claude Code on the owner's computer needs a hub passcode first (on the AI Hub page)."})
+                    return
+                owner = await self.get_state(OwnerState)
+                if not config.is_owner(owner.owner_key):
+                    self._held, self._held_context = text, form.get("context") or ""
+                    self.ask_passcode = True
+                    return
+            self.messages.append({"kind": "user", "text": text})
+            if self.busy:
+                self._queued.append(text)
+                return
+            self.busy = True
+            self.status = ""
+            if not self._chat_id or self._chat_id not in _CHATS:
+                self._chat_id = uuid.uuid4().hex
+            chat_id, role, scope = self._chat_id, self.role, agent.Scope(self.app, self.room, self.lang)
+        chat = _CHATS.get(chat_id)
+        if chat is None:
+            chat = _CHATS[chat_id] = agent.Chat(role, scope, user="companion", manner="talk")
+
+        async def show(event: dict) -> None:
+            async with self:
+                kind = event["type"]
+                if kind == "model":
+                    self.model = event["text"]
+                    chat.user = event["text"]
+                elif kind == "text":
+                    mood, words = talk.mood_of(event["text"])
+                    if words:
+                        self._say(talk.traditional(words, self.lang), mood)
+                elif kind == "tool":
+                    self.messages.append({"kind": "tool", "text": event["name"]})
+                elif kind in ("web", "note", "info"):
+                    self.messages.append({"kind": kind, "text": event["text"]})
+                elif kind == "result":
+                    self.messages.append({"kind": "result" if event["ok"] else "error", "text": event["text"]})
+                elif kind == "error":
+                    self.messages.append({"kind": "error", "text": event["text"]})
+                elif kind == "status":
+                    self.status = event["text"]
+
+        while True:
+            try:
+                await chat.send(text, show, (), context=context)
+            except Exception as e:  # noqa: BLE001 — the person sees what went wrong
+                await show({"type": "error", "text": f"{type(e).__name__}: {e}"})
+            async with self:
+                if self._queued and self._chat_id == chat_id:
+                    text, self._queued = " ".join(self._queued), []
+                    continue
+                self.busy = False
+                self.status = ""
+                return
 
     @rx.event
     def close_dialog(self):

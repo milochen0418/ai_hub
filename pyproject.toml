@@ -23,6 +23,15 @@ mcp = ">=2.3,<3"
 pillow = ">=12"
 pypdfium2 = ">=5,<6"
 imageio-ffmpeg = ">=0.6"
+# The talking AI's voice (ai_hub.talk): Kokoro speaks (ONNX; misaki reads Chinese), Whisper hears.
+# kokoro-onnx says Python <3.14, misaki <3.13, and faster-whisper's wheels (ctranslate2) stop at
+# 3.14 for now: on a newer Python the hub installs without them and the browser's own speech is
+# used instead (for Chinese alone, when only misaki is missing).
+kokoro-onnx = {version = ">=0.6,<1", python = "<3.14"}
+misaki = {version = ">=0.9,<1", extras = ["zh"], python = "<3.13"}
+faster-whisper = {version = ">=1.1,<2", python = "<3.15"}
+numpy = {version = ">=1.26,<2.4", python = "<3.15"}
+opencc-python-reimplemented = ">=0.1.7"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

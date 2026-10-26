@@ -80,6 +80,48 @@ uses Claude or OpenAI with a key; use the `local` role for files that must stay 
 go through Pillow, PDFs through pdfium (`pypdfium2`), videos through the ffmpeg that
 `imageio-ffmpeg` brings, so the container needs nothing else installed.
 
+## For people: the talking AI
+
+`https://ai.reflex-ddns.com/talk`, or in any app with one button (`reflex_ddns_auth.companion`,
+⌥A / Alt+A anywhere on the page): a face in a dialog over the page that listens, answers out loud
+and keeps its expression, and that knows what the page shows. CAD Roam's top bar has it: "where am
+I?", "is this hall too dark?", "what's that in front of me?" are answered about the model you stand
+in, because the page tells the dialog where you are and where you look, and the AI can look with the
+app's own tools (`roam.view` takes the picture you see).
+
+```python
+from reflex_ddns_auth.companion import ai_button, install_ai_button
+
+install_ai_button(app, room=MyState.room_id, lang=MyState.lang)   # a floating button on every page
+ai_button(room=..., floating=False, class_name="...")               # or one of your own, where you want it
+```
+
+```js
+// What the page shows now, in words (and numbers), for the AI: asked every couple of seconds
+// while the dialog is open, and sent with each message.
+window.__ddnsContext = () => ({ text: `${name} stands at the door of the chapel, looking north...` });
+```
+
+- **Talking.** Press the microphone once: it listens hands-free, cuts what you say at your pauses
+  and sends each sentence; the answer is read out (the mouth moves with the voice) and shown as
+  words. Type instead if you like. While the AI speaks, the microphone doesn't listen to it; press
+  the square (or the face) to stop it.
+- **Moods.** Each answer begins with a mood the AI chooses (happy, laughing, surprised, thinking,
+  sad, angry, a wink), which the face shows and the transcript marks. Pick a face (human, cat,
+  panda, robot) above the chat.
+- **Minimize it** with the dialog's ⧉ button: a small picture-in-picture window with the face
+  and its latest words, large, that keeps talking and listening while you move on in the app
+  (in CAD Roam, keep walking).
+- **The voice** is the hub's: Kokoro speaks (Chinese voices and English ones, `AI_HUB_VOICE_ZH`
+  / `AI_HUB_VOICE_EN`), Whisper hears (`AI_HUB_WHISPER_MODEL`, default `small`; on a page in 繁體中文 what is heard
+  and what the AI answers come out in Traditional characters). Both download the first time the AI is opened (about 380 MB
+  and 480 MB, into `AI_HUB_DATA/voice/`; the dialog says how far they are) and stay on this
+  machine; until then, and on a Python without their wheels (3.15; Chinese reading needs misaki,
+  which stops at 3.12), the browser's own speech is used. `/api/talk/status`, `/api/talk/tts` and `/api/talk/stt` are theirs (`ai_hub/talk.py`).
+- **Which AI** answers is the role picked in the dialog (`fast` by default: the local Ollama
+  model; `smart` may be Claude, or the Claude Code on your computer, with the passcode); it gets
+  the app's tools and guide like the assistant, and a short talking manner (`ai_hub/agent.py`).
+
 ## For app developers: offer tools
 
 ```python

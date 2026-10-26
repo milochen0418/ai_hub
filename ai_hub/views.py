@@ -6,7 +6,7 @@ import reflex as rx
 from reflex.event import EventSpec
 
 from ai_hub import attachments, config
-from ai_hub.states import DROP_ID, PICK_ID, SESSION_CHOICE, AssistantState, HubState
+from ai_hub.states import DROP_ID, PICK_ID, SESSION_CHOICE, AssistantState, HubState, TalkState
 
 CARD = "bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-col gap-3"
 H2 = "text-base font-semibold text-slate-800"
@@ -620,3 +620,169 @@ def assistant_dialog() -> rx.Component:
     # A fixed height: the dialog takes the height its content reports, so the content can't
     # take the dialog's (the host keeps the dialog within the window).
     return rx.el.div(chat_view(dialog=True), class_name="p-4 bg-slate-50 h-[560px] flex flex-col")
+
+
+# ------------------------------------------------------------ the talking AI
+
+TALK_CSS = """
+#talk-face { background: #e2e8f0; }
+#talk-mic[data-on="1"] { background: #dc2626; color: #fff; border-color: #dc2626; }
+#talk-mic[data-hearing="1"] { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.3); }
+#talk-speaker[data-on="0"] { opacity: 0.45; }
+#talk-stop { display: none; }
+#talk-root[data-speaking="1"] #talk-stop { display: inline-flex; }
+/* As a small picture-in-picture window (scaled down by the host): the face and the words, large. */
+html[data-intent-view="pip"] .talk-hide { display: none !important; }
+html[data-intent-view="pip"] #talk-dialog { height: auto !important; padding: 12px !important; }
+html[data-intent-view="pip"] #talk-body { flex-direction: column; }
+html[data-intent-view="pip"] #talk-left { width: 100% !important; }
+html[data-intent-view="pip"] #talk-face { height: 400px !important; }
+html[data-intent-view="pip"] #talk-caption { font-size: 34px !important; line-height: 1.25 !important; max-height: none !important; }
+html[data-intent-view="pip"] #talk-hearing { font-size: 26px !important; }
+"""
+
+MOOD_MARKS = [("happy", "🙂"), ("laughing", "😄"), ("surprised", "😮"), ("thinking", "🤔"), ("sad", "😢"), ("angry", "😠"), ("wink", "😉")]
+ROUND = "h-[38px] w-[38px] shrink-0 rounded-full border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 flex items-center justify-center"
+
+
+def talk_row(m: rx.Var) -> rx.Component:
+    assistant = rx.el.div(
+        rx.el.span(rx.match(m["mood"], *MOOD_MARKS, ""), class_name="mr-1"),
+        m["text"],
+        class_name="shrink-0 self-start max-w-[90%] bg-white border border-slate-200 rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap",
+    )
+    return rx.match(
+        m["kind"],
+        ("user", rx.el.div(m["text"], class_name="shrink-0 self-end max-w-[85%] bg-emerald-600 text-white rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap")),
+        ("assistant", assistant),
+        ("tool", rx.el.div("⚙ " + m["text"], class_name="shrink-0 self-start text-xs font-mono text-slate-500 pl-2")),
+        ("web", rx.el.div("🌐 " + m["text"], class_name="shrink-0 self-start text-xs text-sky-700 pl-2 truncate max-w-[90%]")),
+        ("note", rx.el.div(m["text"], class_name="shrink-0 self-start max-w-[90%] text-xs italic text-slate-500 border-l-2 border-slate-300 pl-2 whitespace-pre-wrap")),
+        ("info", rx.el.div(m["text"], class_name="shrink-0 self-start text-xs text-slate-600 pl-2")),
+        ("result", rx.el.div("✓ " + m["text"], class_name="shrink-0 self-start text-xs font-mono text-emerald-700 pl-4 truncate max-w-[90%]")),
+        rx.el.div("✗ " + m["text"], class_name="shrink-0 self-start text-xs font-mono text-red-600 pl-4 whitespace-pre-wrap max-w-[90%]"),
+    )
+
+
+def talk_passcode_prompt() -> rx.Component:
+    return rx.el.div(
+        rx.el.p(
+            "This goes to the hub owner's own Claude Code, on their own Claude plan, for their development only. Enter the hub's passcode:",
+            class_name="text-sm text-amber-900",
+        ),
+        rx.el.div(
+            rx.el.input(type="password", placeholder="Passcode", value=TalkState.passcode, on_change=TalkState.set_passcode, id="talk-passcode", class_name=INPUT + " flex-1"),
+            rx.el.button("Unlock and send", on_click=TalkState.unlock, class_name=BUTTON),
+            class_name="flex gap-2",
+        ),
+        rx.cond(TalkState.passcode_note != "", rx.el.p(TalkState.passcode_note, class_name="text-xs text-red-600")),
+        class_name=NOTICE,
+    )
+
+
+def talk_view(dialog: bool = False) -> rx.Component:
+    """The talking AI: its face and words on the left, the conversation on the right, the
+    microphone, the speaker and a box to type in below. assets/talk.js makes it live."""
+    header = rx.el.div(
+        rx.el.div(
+            rx.el.span("AI", class_name="font-semibold text-slate-800"),
+            rx.cond(
+                TalkState.app != "",
+                rx.el.span(" · " + TalkState.app + rx.cond(TalkState.room != "", " / " + TalkState.room, ""), class_name="text-sm text-slate-500"),
+            ),
+            rx.cond(TalkState.model != "", rx.el.span(" · " + TalkState.model, class_name="text-xs text-slate-400")),
+            class_name="min-w-0 truncate",
+        ),
+        rx.el.div(
+            rx.el.select(
+                *[rx.el.option(r, value=r) for r in config.ROLES],
+                value=TalkState.role,
+                on_change=TalkState.set_role,
+                title="Which AI answers (set on the AI Hub page)",
+                id="talk-role",
+                class_name=INPUT + " py-1",
+            ),
+            rx.el.select(id="talk-style", title="The face", class_name=INPUT + " py-1"),
+            rx.el.button("New chat", on_click=TalkState.new_chat, class_name=SUBTLE_BUTTON),
+            class_name="flex gap-2 items-center shrink-0",
+        ),
+        class_name="talk-hide flex items-center justify-between gap-2" + (" pr-28" if dialog else ""),
+    )
+    left = rx.el.div(
+        rx.el.canvas(id="talk-face", class_name="w-full aspect-square rounded-2xl"),
+        rx.el.div(id="talk-caption", class_name="text-[15px] text-slate-800 leading-snug max-h-28 overflow-y-auto whitespace-pre-wrap"),
+        rx.el.div(id="talk-hearing", class_name="text-sm text-red-700 italic min-h-[1.25rem]"),
+        id="talk-left",
+        class_name="w-[232px] shrink-0 flex flex-col gap-2",
+    )
+    right = rx.el.div(
+        rx.cond(
+            TalkState.messages.length() == 0,
+            rx.el.div(
+                rx.el.p("Press the microphone and talk, or type. I can see what your page shows and use its tools."),
+                class_name="text-sm text-slate-400 self-center text-center pt-6 px-4",
+            ),
+        ),
+        rx.foreach(TalkState.messages, talk_row),
+        rx.cond(
+            TalkState.busy,
+            rx.el.div(
+                rx.el.span(class_name="h-2 w-2 mt-1 rounded-full bg-emerald-500 animate-pulse shrink-0"),
+                rx.el.span(rx.cond(TalkState.status != "", TalkState.status, "…"), class_name="whitespace-pre-wrap"),
+                id="talk-busy",
+                class_name="shrink-0 self-start flex items-start gap-2 text-xs text-slate-500 pl-2",
+            ),
+        ),
+        id="talk-messages",
+        class_name="talk-hide flex flex-col gap-2 overflow-y-auto flex-1 min-h-0 py-1",
+    )
+    form = rx.el.form(
+        rx.el.button(rx.icon("mic", size=18), type="button", id="talk-mic", title="Listen to me (hands free)", class_name=ROUND, custom_attrs={"data-on": "0"}),
+        rx.el.button(rx.icon("volume-2", size=18), type="button", id="talk-speaker", title="Speak the answers", class_name=ROUND, custom_attrs={"data-on": "1"}),
+        rx.el.button(rx.icon("square", size=16), type="button", id="talk-stop", title="Stop talking", class_name=ROUND + " !bg-slate-800 !text-white"),
+        rx.el.textarea(
+            placeholder="Say something, or type it (Enter sends)",
+            name="draft",
+            rows=1,
+            id="talk-input",
+            class_name=INPUT + " flex-1 resize-none",
+        ),
+        rx.el.input(type="hidden", name="context", id="talk-context"),
+        rx.el.button("Send", type="submit", id="talk-send", class_name=BUTTON),
+        on_submit=TalkState.send,
+        reset_on_submit=True,
+        id="talk-form",
+        class_name="talk-hide flex gap-2 items-center",
+    )
+    return rx.el.div(
+        rx.el.style(TALK_CSS),
+        header,
+        rx.el.div(left, right, id="talk-body", class_name="flex gap-3 flex-1 min-h-0"),
+        rx.cond(TalkState.ask_passcode, talk_passcode_prompt()),
+        rx.el.div(id="talk-status", class_name="talk-hide text-xs text-slate-500 min-h-[1rem]"),
+        form,
+        # What to read out next (talk.js watches it).
+        rx.el.div(id="talk-say", custom_attrs={"data-seq": TalkState.speech["seq"], "data-text": TalkState.speech["text"], "data-mood": TalkState.speech["mood"]}, class_name="hidden"),
+        rx.script(src="/avatar_face.js"),
+        rx.script(src="/talk.js"),
+        id="talk-root",
+        custom_attrs={
+            "data-backend": rx.get_upload_url(""),
+            "data-lang": TalkState.lang,
+            "data-app": TalkState.app,
+            "data-busy": rx.cond(TalkState.busy, "1", ""),
+        },
+        class_name="flex flex-col gap-2 h-full",
+    )
+
+
+def talk_page() -> rx.Component:
+    return rx.el.main(
+        rx.el.a("← AI Hub", href="/", class_name="text-sm text-slate-500"),
+        talk_view(),
+        class_name="max-w-3xl mx-auto p-6 flex flex-col gap-3 bg-slate-50 h-screen",
+    )
+
+
+def talk_dialog() -> rx.Component:
+    return rx.el.div(talk_view(dialog=True), id="talk-dialog", class_name="p-4 bg-slate-50 h-[540px] flex flex-col")
