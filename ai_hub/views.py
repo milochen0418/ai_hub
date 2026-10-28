@@ -227,6 +227,82 @@ def models_card() -> rx.Component:
     )
 
 
+def app_role_row(app: rx.Var, r: rx.Var) -> rx.Component:
+    return rx.el.div(
+        rx.el.div(
+            rx.el.span(r["role"], class_name="text-sm font-medium text-slate-800"),
+            rx.el.span("now: ", r["now"], class_name="text-xs text-slate-500"),
+            class_name="flex flex-col w-64 shrink-0",
+        ),
+        rx.el.select(
+            rx.foreach(
+                HubState.app_options,
+                lambda c: rx.el.option(
+                    rx.match(c, ("", "Same as the role"), ("ollama/", "Ollama: pick a model"), (SESSION_CHOICE, SESSION_LABEL + ", for your own asks"), c),
+                    value=c,
+                ),
+            ),
+            value=r["chosen"],
+            on_change=lambda v: HubState.set_app_target(app, r["role"], v),
+            disabled=HubState.locked,
+            class_name=INPUT + " flex-1",
+        ),
+        class_name="flex items-center gap-3",
+    )
+
+
+def app_models_card() -> rx.Component:
+    """What each app's AI answers with: the roles the app asks for, and a choice per role."""
+    return rx.el.section(
+        rx.el.h2("What each app's AI uses", class_name=H2),
+        rx.el.p(
+            "An app asks for a role (reflex_ddns_auth.ai) and gets the role's model above, unless another "
+            "one is chosen for it here; everyone using the app gets it. Apps appear once they have asked. "
+            "Your Claude Code answers smart and coder when set here (a quick role gets the role's usual model: "
+            "that Claude Code takes one message at a time); it is your own Claude login, so keep that to your "
+            "own development, and give an organization a Claude API key (billed to you) instead.",
+            class_name=MUTED,
+        ),
+        rx.cond(
+            HubState.app_choices.length() == 0,
+            rx.el.p("No app has asked yet.", class_name=MUTED),
+            rx.foreach(
+                HubState.app_choices,
+                lambda a: rx.el.div(
+                    rx.el.div(
+                        rx.el.span(a["app"], class_name="text-sm font-semibold text-slate-700"),
+                        rx.el.button("Forget", on_click=HubState.forget_app(a["app"]), disabled=HubState.locked, class_name=SUBTLE_BUTTON),
+                        class_name="flex items-center justify-between",
+                    ),
+                    rx.foreach(a["roles"].to(list[dict[str, str]]), lambda r: app_role_row(a["app"], r)),
+                    class_name="flex flex-col gap-2 pt-2",
+                ),
+            ),
+        ),
+        rx.el.h3("Recent asks", class_name="text-sm font-semibold text-slate-700 pt-2"),
+        rx.cond(
+            HubState.asks.length() == 0,
+            rx.el.p("None yet.", class_name=MUTED),
+            rx.el.div(
+                rx.foreach(
+                    HubState.asks,
+                    lambda e: rx.el.div(
+                        rx.el.span(e["at"], class_name="text-slate-400 w-16"),
+                        rx.el.span(e["app"], class_name="text-slate-700 w-24 truncate"),
+                        rx.el.span(e["user"], class_name="text-slate-700 w-40 truncate"),
+                        rx.el.span(e["role"], class_name="text-slate-800 w-14"),
+                        rx.el.span(e["model"], class_name="text-slate-800 flex-1 truncate"),
+                        rx.el.span(e["result"], class_name="text-slate-600 w-32 truncate"),
+                        rx.el.span(e["ms"] + " ms", class_name="text-slate-400 w-20 text-right"),
+                        class_name="flex gap-2 text-xs font-mono py-0.5 border-b border-slate-100",
+                    ),
+                ),
+            ),
+        ),
+        class_name=CARD,
+    )
+
+
 def passcode_form(label: str, button: str) -> rx.Component:
     return rx.el.div(
         rx.el.p(label, class_name="text-sm text-slate-700"),
@@ -364,6 +440,7 @@ def hub_page() -> rx.Component:
         connect_card(),
         apps_card(),
         models_card(),
+        app_models_card(),
         session_card(),
         log_card(),
         class_name="max-w-4xl mx-auto p-6 flex flex-col gap-5 bg-slate-50 min-h-screen",

@@ -10,7 +10,7 @@ document.
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, AsyncIterator, Sequence
 
 import anthropic
 
@@ -103,3 +103,24 @@ class ClaudeConversation:
             blocks.append({"type": "tool_result", "tool_use_id": call.id, "content": content, "is_error": not result.ok})
         # All results of one turn go back in one message.
         self.messages.append({"role": "user", "content": blocks})
+
+
+async def stream_text(provider: Provider, model: str, system: str, messages: list[dict[str, str]], max_tokens: int, effort: str, answer: Any) -> AsyncIterator[str]:
+    """One answer for an app (``ai_hub.brains.answer``), as Claude writes it; sets
+    ``answer.stop``. The rules are cached between an app's turns (they repeat)."""
+    client = anthropic.AsyncAnthropic(api_key=provider.api_key)
+    extra: dict[str, Any] = {"system": system} if system else {}
+    async with client.beta.messages.stream(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+        output_config={"effort": effort},
+        cache_control={"type": "ephemeral"},
+        betas=[FALLBACK_BETA],
+        fallbacks="default",
+        **extra,
+    ) as stream:
+        async for text in stream.text_stream:
+            yield text
+        final = await stream.get_final_message()
+    answer.stop = final.stop_reason if final.stop_reason in ("refusal", "max_tokens") else "end_turn"

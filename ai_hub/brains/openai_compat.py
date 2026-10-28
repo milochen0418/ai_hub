@@ -4,7 +4,7 @@ how the hub lists any provider's models, Ollama's included (``/v1/models``)."""
 from __future__ import annotations
 
 import json
-from typing import Any, Sequence
+from typing import Any, AsyncIterator, Sequence
 
 import httpx
 
@@ -104,3 +104,35 @@ class OpenAICompatConversation:
     def add_results(self, results: list[tuple[ToolCall, Result]]) -> None:
         for call, result in results:
             self.messages.append({"role": "tool", "tool_call_id": call.id, "content": text_only(result)})
+
+
+async def stream_text(provider: Provider, model: str, system: str, messages: list[dict[str, str]], max_tokens: int, effort: str, answer: Any) -> AsyncIterator[str]:
+    """One answer for an app (``ai_hub.brains.answer``), as the model writes it (SSE); sets
+    ``answer.stop``. ``effort`` is left to the server's default."""
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": ([{"role": "system", "content": system}] if system else []) + list(messages),
+        "stream": True,
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(TIMEOUT, connect=5.0)) as client:
+        async with client.stream("POST", f"{provider.base_url}/chat/completions", json=body, headers=_auth(provider)) as r:
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code}: {(await r.aread())[:300]!r}")
+            async for line in r.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data)
+                except ValueError:
+                    continue
+                if event.get("error"):
+                    raise RuntimeError(str(event["error"].get("message") if isinstance(event["error"], dict) else event["error"]))
+                choice = (event.get("choices") or [{}])[0]
+                piece = (choice.get("delta") or {}).get("content")
+                if piece:
+                    yield str(piece)
+                if choice.get("finish_reason"):
+                    answer.stop = "max_tokens" if choice["finish_reason"] == "length" else "end_turn"

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Sequence
+from typing import Any, AsyncIterator, Sequence
 
 import httpx
 
@@ -86,3 +86,35 @@ class OllamaConversation:
     def add_results(self, results: list[tuple[ToolCall, Result]]) -> None:
         for call, result in results:
             self.messages.append({"role": "tool", "tool_name": call.name, "content": text_only(result)})
+
+
+async def stream_text(provider: Provider, model: str, system: str, messages: list[dict[str, str]], max_tokens: int, effort: str, answer: Any) -> AsyncIterator[str]:
+    """One answer for an app (``ai_hub.brains.answer``), as the model writes it; sets
+    ``answer.stop``. ``effort`` means nothing to Ollama."""
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": ([{"role": "system", "content": system}] if system else []) + list(messages),
+        "stream": True,
+        "keep_alive": "30m",
+        "options": {"num_ctx": NUM_CTX, "num_predict": max_tokens},
+    }
+    url = provider.base_url.removesuffix("/v1") + "/api/chat"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(TIMEOUT, connect=5.0)) as client:
+        async with client.stream("POST", url, json=body) as r:
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code}: {(await r.aread())[:300]!r}")
+            async for line in r.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                except ValueError:
+                    continue
+                if data.get("error"):
+                    raise RuntimeError(str(data["error"]))
+                piece = (data.get("message") or {}).get("content") or ""
+                if piece:
+                    yield piece
+                if data.get("done"):
+                    answer.stop = "max_tokens" if data.get("done_reason") == "length" else "end_turn"
+                    break

@@ -5,9 +5,9 @@ which the App Store keeps in a volume. Environment variables fill in what the fi
 so a fresh install works: ``OLLAMA_URL`` (default: the Ollama on the Docker host),
 ``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``.
 
-Roles are what the assistant (and later the apps) ask for: ``smart``, ``fast``, ``local`` and
-``coder``, each set to ``<provider>/<model>``, so changing a role changes every user of it at
-once. Tokens let an agent (Claude Code, Codex, ...) use the hub's MCP address; only their
+Roles are what the assistant and the apps (``reflex_ddns_auth.ai``) ask for: ``smart``, ``fast``,
+``local`` and ``coder``, each set to ``<provider>/<model>``, so changing a role changes every
+user of it at once. Tokens let an agent (Claude Code, Codex, ...) use the hub's MCP address; only their
 SHA-256 is kept, and each acts in the apps under the name it was made for. One of them can be
 the token of the Claude Code on the owner's computer (``ai_hub.session``), which then appears
 as the provider ``claude-code``.
@@ -41,6 +41,9 @@ CLAUDE_MODEL = "claude-opus-5-5"
 TOKEN_PREFIX = "aihub_"
 SESSION = "claude-code"  # the provider that is the Claude Code on the owner's computer
 SESSION_TOKEN_NAME = "Claude Code on my computer"
+# The roles an app may hand to the Claude Code on the owner's computer: not the quick ones, which
+# come many times a minute, and that Claude Code takes one message at a time.
+SESSION_ROLES = ("smart", "coder")
 _PASSCODE_ROUNDS = 200_000
 
 _lock = threading.Lock()
@@ -135,6 +138,13 @@ def roles(data: dict[str, Any] | None = None) -> dict[str, str]:
     return {role: data["roles"].get(role) or defaults[role] for role in ROLES}
 
 
+def default_target(role: str, data: dict[str, Any] | None = None) -> str:
+    """What a role is when nobody set it (see ``roles``): Claude with a key, else Ollama."""
+    known = providers(data or load())
+    smart = f"anthropic/{CLAUDE_MODEL}" if "anthropic" in known else "ollama/"
+    return {"smart": smart, "fast": "ollama/", "local": "ollama/", "coder": smart}[role]
+
+
 def set_role(role: str, target: str) -> None:
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
@@ -159,6 +169,62 @@ def resolve(role_or_target: str) -> tuple[Provider, str]:
     if role_or_target == "local" and not known[name].local:
         raise LookupError("the local role must stay on this machine (an Ollama model)")
     return known[name], model
+
+
+# ------------------------------------------------------------ the apps' choices
+
+
+def apps_asking(data: dict[str, Any] | None = None) -> dict[str, dict[str, str]]:
+    """Each app that has asked the hub's models (``ai_hub.ask``): the roles it asked for, each
+    with the target chosen for it on the hub's page ("" = the role's own model)."""
+    data = data or load()
+    out: dict[str, dict[str, str]] = {}
+    for app, entry in sorted((data.get("apps") or {}).items()):
+        chosen = entry.get("roles") or {}
+        out[app] = {role: str(chosen.get(role) or "") for role in entry.get("asked") or []}
+    return out
+
+
+def note_ask(app: str, role: str) -> None:
+    """Remembers that ``app`` asks for ``role``, so the page can offer a choice for it (written
+    once per pair)."""
+    app = app.strip().lower()
+    if not app or role not in ROLES:
+        return
+    with _lock:
+        data = load()
+        entry = data.setdefault("apps", {}).setdefault(app, {"asked": [], "roles": {}})
+        if role in entry.setdefault("asked", []):
+            return
+        entry["asked"].append(role)
+        save(data)
+
+
+def app_target(app: str, role: str) -> str:
+    """The target chosen on the page for ``app``'s ``role`` ("" = the role's own model)."""
+    return str(((load().get("apps") or {}).get(app.strip().lower(), {}).get("roles") or {}).get(role) or "")
+
+
+def set_app_target(app: str, role: str, target: str) -> None:
+    if role not in ROLES:
+        raise ValueError(f"unknown role {role!r}")
+    with _lock:
+        data = load()
+        entry = data.setdefault("apps", {}).setdefault(app.strip().lower(), {"asked": [], "roles": {}})
+        roles = entry.setdefault("roles", {})
+        if target:
+            roles[role] = target
+        else:
+            roles.pop(role, None)
+        save(data)
+
+
+def forget_app(app: str) -> None:
+    """Drops an app's row from the page (it comes back when the app asks again)."""
+    with _lock:
+        data = load()
+        if data.get("apps", {}).pop(app.strip().lower(), None) is not None:
+            save(data)
 
 
 # ------------------------------------------------------------ tokens

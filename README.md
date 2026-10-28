@@ -141,9 +141,38 @@ hub finds them through re-ddns. Calls carry a short-lived JWT signed with the pl
 `DDNS_AUTH_SECRET`; anything else is refused. `kind` is `read`, `write` or `danger` (shown to
 agents as MCP tool annotations). See `reflex_ddns_auth/tools.py` and `reflex_ddns_auth/rooms.py`.
 
+## For app developers: ask the hub's models
+
+An app that wants an AI of its own (a notebook's assistant, a cell it writes) asks the hub, with
+`reflex_ddns_auth.ai`, and holds no API key:
+
+```python
+from reflex_ddns_auth import ai
+
+reply = ai.stream("coder", system="You edit one cell of a notebook...", messages=[{"role": "user", "content": "..."}], user="milo@example.com")
+async for piece in reply:       # the answer as it is written
+    ...
+reply.model, reply.stop          # "Claude (claude-opus-5-5)"; "end_turn", "max_tokens" or "refusal"
+```
+
+The app names a role (`smart`, `fast`, `local` or `coder`, below) and brings its own rules and
+conversation; which model answers is set here, on the hub's page, for every app at once (the
+app's badge can show `reply.model`). Under **What each app's AI uses**, the page lists each app
+that has asked, with the roles it asks for: there one app can be given another model for a role
+(Cellora's `coder` on Claude while the role stays on Ollama, say), and the last asks are listed. `ai.status(role)` says what answers a role (None: there is
+no hub, so the app may fall back to an AI of its own); `ai.complete(...)` gives the whole answer
+at once. The hub is found through re-ddns (or `DDNS_AI_HUB_URL`), and each request carries a
+short-lived token signed with the platform's `DDNS_AUTH_SECRET`, naming the app and the person:
+nothing long-lived to steal in the app's container. The door is `POST /api/ai/stream` (lines
+of JSON) and `GET /api/ai/status` (`ai_hub/ask.py`). A role set to the Claude Code on your
+computer answers the apps too, whole rather than streamed (`smart` and `coder`; a quick role
+gets the role's default model, Claude with a key, else Ollama, since that Claude Code takes one
+message at a time): everyone using the app then uses your own Claude login, so keep that to
+your own development, and give an organization a Claude API key (billed to you) instead.
+
 ## Models
 
-Roles are what the assistant asks for; each is set to `<provider>/<model>` on the hub's page:
+Roles are what the assistant and the apps ask for; each is set to `<provider>/<model>` on the hub's page:
 
 | Role | Default | For |
 |---|---|---|
