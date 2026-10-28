@@ -271,3 +271,67 @@ def test_a_role_on_the_owners_claude_code_answers_the_apps(client, monkeypatch) 
             return lines(r.text)[-1]
 
     assert "error" in asyncio.run(again())
+
+
+def test_an_apps_local_role_stays_on_this_machine(monkeypatch) -> None:
+    """A model chosen for an app's local role must be on this machine: the page refuses another,
+    and one already in the settings is passed over for the role's own."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    config.set_role("local", "ollama/qwen2.5:7b")
+    with pytest.raises(ValueError, match="stay on this machine"):
+        config.set_app_target("cellora", "local", "anthropic/claude-haiku-5-5")
+    config.set_app_target("cellora", "local", "ollama/llama3.2:3b")
+    assert asyncio.run(brains.describe("local", "cellora"))[2] == "Ollama (llama3.2:3b)"
+    data = config.load()
+    data["apps"]["cellora"]["roles"]["local"] = "anthropic/claude-haiku-5-5"  # from before the page refused it
+    config.save(data)
+    assert asyncio.run(brains.describe("local", "cellora"))[2] == "Ollama (qwen2.5:7b)"
+    # Other roles may still go anywhere.
+    config.set_app_target("cellora", "smart", "anthropic/claude-haiku-5-5")
+    assert asyncio.run(brains.describe("smart", "cellora"))[2] == "Claude (claude-haiku-5-5)"
+
+
+def test_the_apps_say_what_they_ask_for(monkeypatch) -> None:
+    """Each app's manifest carries what it asks each role for (reflex_ddns_auth.ai.uses)."""
+    from ai_hub import registry
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "cellora":
+            return httpx.Response(200, json={"v": 1, "app": "cellora", "tools": [], "ai_uses": {"smart": "The assistant panel's answers", "fast": ""}})
+        return httpx.Response(200, json={"v": 1, "app": "cad", "tools": [{"name": "cad.get_code"}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(registry.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(registry, "_cache", (0.0, [], {}))
+    monkeypatch.setenv("AI_HUB_APPS", "cellora=http://cellora:8000,cad=http://cad:8000")
+    assert asyncio.run(registry.ai_uses(refresh=True)) == {"cellora": {"smart": "The assistant panel's answers"}}
+    assert [(t.app, t.name) for t in asyncio.run(registry.tools())] == [("cad", "cad.get_code")]
+
+
+def test_the_page_lists_what_each_app_uses(monkeypatch) -> None:
+    """An app that says what it uses is listed by its words before anyone asked; one that only
+    asked, by its roles. Each row offers only the models the role would really reach."""
+    from ai_hub import registry
+
+    async def ai_uses(refresh=False):
+        return {"cellora": {"smart": "The assistant panel's answers", "fast": "The grey suggestions while typing", "chat": "not a role"}}
+
+    monkeypatch.setattr(registry, "ai_uses", ai_uses)
+    for role in config.ROLES:
+        config.set_role(role, "ollama/qwen2.5:7b")
+    config.set_app_target("cellora", "fast", "ollama/qwen2.5-coder:7b")
+    config.note_ask("cellora", "local")  # asked, though it didn't say so
+    config.note_ask("grid", "smart")  # only asked
+    session_choice = f"{config.SESSION}/"
+    choices = ["ollama/", session_choice, "anthropic/claude-opus-5-5", "ollama/qwen2.5:7b", "ollama/qwen2.5-coder:7b"]
+
+    cellora, grid = asyncio.run(ask.app_rows(choices, config.roles()))
+    assert (cellora["app"], cellora["said"], [r["role"] for r in cellora["roles"]]) == ("cellora", True, ["smart", "fast", "local"])
+    smart, fast, local = cellora["roles"]
+    assert (smart["title"], smart["note"], smart["chosen"]) == ("The assistant panel's answers", "smart · now: Ollama (qwen2.5:7b)", "")
+    assert smart["options"] == ["", *choices]
+    assert (fast["title"], fast["note"], fast["chosen"]) == ("The grey suggestions while typing", "fast · now: Ollama (qwen2.5-coder:7b)", "ollama/qwen2.5-coder:7b")
+    assert session_choice not in fast["options"] and "anthropic/claude-opus-5-5" in fast["options"]
+    assert (local["title"], local["note"]) == ("local", "now: Ollama (qwen2.5:7b)")
+    assert local["options"] == ["", "ollama/", "ollama/qwen2.5:7b", "ollama/qwen2.5-coder:7b"]
+    assert grid == {"app": "grid", "said": False, "roles": [{"role": "smart", "title": "smart", "note": "now: Ollama (qwen2.5:7b)", "chosen": "", "options": ["", *choices]}]}

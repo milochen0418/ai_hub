@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import reflex as rx
 from reflex.event import EventSpec
 
@@ -158,7 +160,7 @@ def role_row(role: str) -> rx.Component:
         ),
         rx.el.select(
             rx.foreach(
-                HubState.choices,
+                HubState.local_choices if role == "local" else HubState.choices,
                 lambda c: rx.el.option(
                     rx.match(c, ("ollama/", "Ollama: pick a model"), (SESSION_CHOICE, SESSION_LABEL), c),
                     value=c,
@@ -230,15 +232,15 @@ def models_card() -> rx.Component:
 def app_role_row(app: rx.Var, r: rx.Var) -> rx.Component:
     return rx.el.div(
         rx.el.div(
-            rx.el.span(r["role"], class_name="text-sm font-medium text-slate-800"),
-            rx.el.span("now: ", r["now"], class_name="text-xs text-slate-500"),
+            rx.el.span(r["title"], class_name="text-sm font-medium text-slate-800"),
+            rx.el.span(r["note"], class_name="text-xs text-slate-500"),
             class_name="flex flex-col w-64 shrink-0",
         ),
         rx.el.select(
             rx.foreach(
-                HubState.app_options,
+                r["options"].to(list[str]),
                 lambda c: rx.el.option(
-                    rx.match(c, ("", "Same as the role"), ("ollama/", "Ollama: pick a model"), (SESSION_CHOICE, SESSION_LABEL + ", for your own asks"), c),
+                    rx.match(c, ("", "Same as the role"), ("ollama/", "Ollama: pick a model"), (SESSION_CHOICE, SESSION_LABEL), c),
                     value=c,
                 ),
             ),
@@ -252,29 +254,36 @@ def app_role_row(app: rx.Var, r: rx.Var) -> rx.Component:
 
 
 def app_models_card() -> rx.Component:
-    """What each app's AI answers with: the roles the app asks for, and a choice per role."""
+    """What each app's AI answers with: what the app uses AI for, and a choice per role."""
     return rx.el.section(
         rx.el.h2("What each app's AI uses", class_name=H2),
         rx.el.p(
-            "An app asks for a role (reflex_ddns_auth.ai) and gets the role's model above, unless another "
-            "one is chosen for it here; everyone using the app gets it. Apps appear once they have asked. "
-            "Your Claude Code answers smart and coder when set here (a quick role gets the role's usual model: "
+            "Each app's AI, in the app's own words (reflex_ddns_auth.ai.uses): each asks for a role and gets "
+            "the role's model above, unless another one is chosen for it here; everyone using the app gets it. "
+            "An app appears once installed, or once it has asked. "
+            "Your Claude Code answers smart and coder when set here (not the quick roles: "
             "that Claude Code takes one message at a time); it is your own Claude login, so keep that to your "
-            "own development, and give an organization a Claude API key (billed to you) instead.",
+            "own development, and give an organization a Claude API key (billed to you) instead. "
+            "The local role only takes a model on this machine.",
             class_name=MUTED,
         ),
         rx.cond(
             HubState.app_choices.length() == 0,
-            rx.el.p("No app has asked yet.", class_name=MUTED),
+            rx.el.p("No app uses the hub's models yet.", class_name=MUTED),
             rx.foreach(
                 HubState.app_choices,
                 lambda a: rx.el.div(
                     rx.el.div(
                         rx.el.span(a["app"], class_name="text-sm font-semibold text-slate-700"),
-                        rx.el.button("Forget", on_click=HubState.forget_app(a["app"]), disabled=HubState.locked, class_name=SUBTLE_BUTTON),
+                        # An app that says what it uses stays listed; Forget drops one that only asked.
+                        rx.cond(
+                            a["said"],
+                            rx.fragment(),
+                            rx.el.button("Forget", on_click=HubState.forget_app(a["app"]), disabled=HubState.locked, class_name=SUBTLE_BUTTON),
+                        ),
                         class_name="flex items-center justify-between",
                     ),
-                    rx.foreach(a["roles"].to(list[dict[str, str]]), lambda r: app_role_row(a["app"], r)),
+                    rx.foreach(a["roles"].to(list[dict[str, Any]]), lambda r: app_role_row(a["app"], r)),
                     class_name="flex flex-col gap-2 pt-2",
                 ),
             ),

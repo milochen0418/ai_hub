@@ -157,16 +157,17 @@ def set_role(role: str, target: str) -> None:
         save(data)
 
 
-def resolve(role_or_target: str) -> tuple[Provider, str]:
+def resolve(role_or_target: str, for_role: str = "") -> tuple[Provider, str]:
     """``(provider, model)`` for a role (``smart``) or a target (``ollama/qwen2.5:7b``);
-    the model is "" when the provider's own default should be used."""
+    the model is "" when the provider's own default should be used. A target chosen for a role
+    (``for_role``) is held to it: one for ``local`` must be on this machine too."""
     data = load()
     target = roles(data).get(role_or_target, role_or_target)
     name, _, model = target.partition("/")
     known = providers(data)
     if name not in known:
         raise LookupError(f"no AI provider {name!r} is set up (add its key on the AI Hub page)")
-    if role_or_target == "local" and not known[name].local:
+    if "local" in (role_or_target, for_role) and not known[name].local:
         raise LookupError("the local role must stay on this machine (an Ollama model)")
     return known[name], model
 
@@ -208,6 +209,8 @@ def app_target(app: str, role: str) -> str:
 def set_app_target(app: str, role: str, target: str) -> None:
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
+    if role == "local" and target and target.partition("/")[0] != "ollama":
+        raise ValueError("the local role must stay on this machine (an Ollama model)")
     with _lock:
         data = load()
         entry = data.setdefault("apps", {}).setdefault(app.strip().lower(), {"asked": [], "roles": {}})

@@ -18,6 +18,9 @@ way the apps verify the hub's tool calls. A role set to the Claude Code on the o
 answers the apps too (``smart`` and ``coder``; a quick role gets the role's default model, since
 that Claude Code takes one message at a time): the hub's owner decides so for everyone using
 the app, on their own Claude login, so that is for their own development.
+
+``app_rows`` is what the hub's page shows of the apps: each one's AI uses, in its own words
+(``reflex_ddns_auth.ai.uses``), with the model each answers with and the ones it may be given.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from reflex_ddns_auth import ai as protocol
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from ai_hub import brains, config
+from ai_hub import brains, config, registry
 
 logger = logging.getLogger(__name__)
 
@@ -157,3 +160,43 @@ async def _lines(answer: brains.Answer, entry: Entry) -> AsyncIterator[str]:
         entry.ms = int((time.monotonic() - started) * 1000)
         LOG.appendleft(entry)
     yield json.dumps({"done": True, "stop": answer.stop}) + "\n"
+
+
+async def app_rows(choices: list[str], roles: dict[str, str]) -> list[dict[str, Any]]:
+    """The page's rows for the apps that say what they ask the hub's models for, or have asked:
+    ``{"app", "said", "roles": [...]}``, a row per role with ``title`` (the app's words for it,
+    else the role), ``note`` (what answers it now), ``chosen`` ("" = the role's own model) and
+    ``options``: the ``choices`` it would really reach (a quick role never goes to the owner's
+    Claude Code; local takes only a model on this machine). ``roles`` is what each role is set
+    to."""
+    session_choice = f"{config.SESSION}/"
+    said = await registry.ai_uses()
+    asked = config.apps_asking()
+    out = []
+    for app in sorted(set(said) | set(asked)):
+        words = {role: w for role, w in said.get(app, {}).items() if role in config.ROLES}
+        rows = []
+        for role in [*words, *(r for r in asked.get(app, {}) if r not in words)]:
+            chosen = config.app_target(app, role)
+            try:
+                now = (await brains.describe(role, app))[2]
+            except Exception as e:  # noqa: BLE001
+                now = f"nothing answers: {e}"
+            if (chosen or roles.get(role, "")).startswith(session_choice) and role not in config.SESSION_ROLES:
+                now = f"{now} (a quick role never goes to your Claude Code)"
+            options = [
+                c
+                for c in choices
+                if (c != session_choice or role in config.SESSION_ROLES) and (role != "local" or c.startswith("ollama/"))
+            ]
+            rows.append(
+                {
+                    "role": role,
+                    "title": words.get(role) or role,
+                    "note": f"{role} · now: {now}" if role in words else f"now: {now}",
+                    "chosen": chosen,
+                    "options": ["", *options],
+                }
+            )
+        out.append({"app": app, "said": bool(words), "roles": rows})
+    return out

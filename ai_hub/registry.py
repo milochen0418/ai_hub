@@ -1,8 +1,10 @@
-"""The installed apps and the tools they offer an AI (``reflex_ddns_auth.tools`` manifests).
+"""The installed apps, the tools they offer an AI (``reflex_ddns_auth.tools`` manifests), and
+what they ask the hub's models for (``reflex_ddns_auth.ai.uses``).
 
 Apps are found the way re-ddns finds intent providers: its service list
 (``$RE_DDNS_API_URL/api/service/list``) gives each app's backend on the Docker network, where
-``/_ddns_tool/manifest`` lists the app's tools. ``AI_HUB_APPS`` (``cad=http://localhost:8061,
+``/_ddns_tool/manifest`` lists the app's tools and, as ``ai_uses``, what it asks each role
+for in its own words. ``AI_HUB_APPS`` (``cad=http://localhost:8061,
 grid=http://localhost:8062``) replaces the list, for running outside the platform. The answer
 is cached for a few seconds, so a newly installed app's tools show up by themselves.
 
@@ -56,7 +58,8 @@ def public_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name)[:64]
 
 
-_cache: tuple[float, list[Tool]] = (0.0, [])
+# (when, every app's tools, each app's {role: what it asks it for})
+_cache: tuple[float, list[Tool], dict[str, dict[str, str]]] = (0.0, [], {})
 _lock = asyncio.Lock()
 
 
@@ -88,14 +91,17 @@ async def apps(client: httpx.AsyncClient) -> list[App]:
     return out
 
 
-async def _manifest(client: httpx.AsyncClient, app: App) -> list[Tool]:
+async def _manifest(client: httpx.AsyncClient, app: App) -> tuple[list[Tool], dict[str, str]]:
+    """The app's tools, and what it asks each role for."""
     try:
         r = await client.get(app.backend + MANIFEST_PATH)
         if r.status_code != 200:
-            return []
+            return [], {}
         m = r.json()
     except (httpx.HTTPError, ValueError):
-        return []
+        return [], {}
+    uses = m.get("ai_uses")
+    said = {str(role): str(words)[:200] for role, words in uses.items() if words} if isinstance(uses, dict) else {}
     out = []
     for t in m.get("tools") or []:
         try:
@@ -112,27 +118,37 @@ async def _manifest(client: httpx.AsyncClient, app: App) -> list[Tool]:
             )
         except (KeyError, TypeError, ValueError):
             logger.warning("Skipping a malformed tool of %s: %r", app.name, t)
-    return out
+    return out, said
+
+
+async def _manifests(refresh: bool) -> tuple[float, list[Tool], dict[str, dict[str, str]]]:
+    global _cache
+    if not refresh and time.monotonic() - _cache[0] < _CACHE_SECONDS:
+        return _cache
+    async with _lock:
+        if not refresh and time.monotonic() - _cache[0] < _CACHE_SECONDS:
+            return _cache
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                found = await apps(client)
+                manifests = await asyncio.gather(*(_manifest(client, a) for a in found))
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("Cannot list the apps: %s", e)
+            found, manifests = [], []
+        result = [t for tools_of_app, _ in manifests for t in tools_of_app]
+        uses = {a.name: said for a, (_, said) in zip(found, manifests) if said}
+        _cache = (time.monotonic(), result, uses)
+        return _cache
 
 
 async def tools(refresh: bool = False) -> list[Tool]:
     """Every tool of every installed app (best effort: an app that doesn't answer has none)."""
-    global _cache
-    if not refresh and time.monotonic() - _cache[0] < _CACHE_SECONDS:
-        return _cache[1]
-    async with _lock:
-        if not refresh and time.monotonic() - _cache[0] < _CACHE_SECONDS:
-            return _cache[1]
-        try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                found = await apps(client)
-                lists = await asyncio.gather(*(_manifest(client, a) for a in found))
-        except (httpx.HTTPError, ValueError) as e:
-            logger.warning("Cannot list the apps: %s", e)
-            lists = []
-        result = [t for tools_of_app in lists for t in tools_of_app]
-        _cache = (time.monotonic(), result)
-        return result
+    return (await _manifests(refresh))[1]
+
+
+async def ai_uses(refresh: bool = False) -> dict[str, dict[str, str]]:
+    """What each installed app asks the hub's models for: ``{app: {role: its words}}``."""
+    return (await _manifests(refresh))[2]
 
 
 async def find(name: str) -> Tool | None:

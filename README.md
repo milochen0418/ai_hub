@@ -153,13 +153,19 @@ reply = ai.stream("coder", system="You edit one cell of a notebook...", messages
 async for piece in reply:       # the answer as it is written
     ...
 reply.model, reply.stop          # "Claude (claude-opus-5-5)"; "end_turn", "max_tokens" or "refusal"
+
+# once, next to app = rx.App(...): what the app asks each role for, in a few plain words
+ai.uses(app, smart="The assistant panel's answers", coder="Writing or fixing a cell (⌘I)", fast="The grey suggestions while typing")
 ```
 
 The app names a role (`smart`, `fast`, `local` or `coder`, below) and brings its own rules and
 conversation; which model answers is set here, on the hub's page, for every app at once (the
-app's badge can show `reply.model`). Under **What each app's AI uses**, the page lists each app
-that has asked, with the roles it asks for: there one app can be given another model for a role
-(Cellora's `coder` on Claude while the role stays on Ollama, say), and the last asks are listed. `ai.status(role)` says what answers a role (None: there is
+app's badge can show `reply.model`); people using the app don't pick models. Under **What each
+app's AI uses**, the page lists each app by the words it gave `ai.uses` from the moment it is
+installed (an app that doesn't say gets a row per role once it has asked): there one app can be
+given another model for a role (Cellora's `coder` on Claude while the role stays on Ollama, say),
+offered only the models the role would really reach (`local` only the ones on this machine), and
+the last asks are listed. `ai.status(role)` says what answers a role (None: there is
 no hub, so the app may fall back to an AI of its own); `ai.complete(...)` gives the whole answer
 at once. The hub is found through re-ddns (or `DDNS_AI_HUB_URL`), and each request carries a
 short-lived token signed with the platform's `DDNS_AUTH_SECRET`, naming the app and the person:

@@ -106,17 +106,18 @@ class Answer:
 async def describe(role: str, app: str | None = None, user: str = "") -> tuple[config.Provider, str, str]:
     """``(provider, model, label)`` for a role: what would answer it now. For an app (``app``:
     its name, "" when unknown; None is the hub's own assistant), the model chosen for that app's
-    role on the hub's page comes first (``config.app_target``). The Claude Code on the owner's
-    computer answers an app's ``smart`` and ``coder`` asks when a role is set to it (the hub's
-    owner decided so for everyone using the app); a quick role on it gets the role's default
-    model instead (Claude with a key, else Ollama). ``user`` is who asks, for the log."""
+    role on the hub's page comes first (``config.app_target``; for ``local``, only one on this
+    machine). The Claude Code on the owner's computer answers an app's ``smart`` and ``coder``
+    asks when a role is set to it (the hub's owner decided so for everyone using the app); a
+    quick role on it gets the role's default model instead (Claude with a key, else Ollama).
+    ``user`` is who asks, for the log."""
     provider, model = config.resolve(role)
     if app is not None:
         chosen = config.app_target(app, role) if app else ""
         if chosen:
             try:
-                provider, model = config.resolve(chosen)
-            except LookupError as e:  # its key is gone: the role's own model, as if nothing was chosen
+                provider, model = config.resolve(chosen, for_role=role)
+            except LookupError as e:  # its key is gone, or it would take local data away: the role's own model, as if nothing was chosen
                 logger.warning("The model chosen for %s's %s can't answer (%s): using the role's", app, role, e)
         if provider.kind == "session" and role in config.ROLES and role not in config.SESSION_ROLES:
             provider, model = config.resolve(config.default_target(role))

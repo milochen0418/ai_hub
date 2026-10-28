@@ -13,7 +13,7 @@ from typing import Any
 import reflex as rx
 from reflex_ddns_auth.intent import IntentPage
 
-from ai_hub import agent, ask, attachments, brains, calls, config, registry, session, talk
+from ai_hub import agent, ask, attachments, calls, config, registry, session, talk
 from ai_hub.brains import openai_compat
 
 logger = logging.getLogger(__name__)
@@ -53,12 +53,12 @@ class HubState(rx.State):
     new_token: str = ""
     roles: dict[str, str] = {}
     choices: list[str] = []
+    local_choices: list[str] = []  # the choices on this machine (Ollama), the only ones for local
     providers: list[dict[str, str]] = []
     log: list[dict[str, str]] = []
-    # The apps that ask the hub's models: [{"app", "roles": [{"role", "chosen", "now"}]}], the
-    # targets they may be given, and their last asks.
+    # The apps that use the hub's models (ask.app_rows): [{"app", "said", "roles": [{"role",
+    # "title", "note", "chosen", "options"}]}], and their last asks.
     app_choices: list[dict[str, Any]] = []
-    app_options: list[str] = []
     asks: list[dict[str, str]] = []
     passcode: str = ""
     new_passcode: str = ""
@@ -171,9 +171,7 @@ class HubState(rx.State):
         if self.session_ready:
             choices = [SESSION_CHOICE] + choices
         self.choices = ["ollama/"] + choices
-        # An app may be given any model; "" is the role's own. The owner's Claude Code answers
-        # only the owner's own asks (brains.describe).
-        self.app_options = [""] + self.choices
+        self.local_choices = [c for c in self.choices if c.startswith("ollama/")]
         self.providers = [
             {
                 "name": "Ollama (on this machine)",
@@ -201,18 +199,7 @@ class HubState(rx.State):
             }
             for e in list(calls.LOG)[:30]
         ]
-        self.app_choices = []
-        for app, roles in config.apps_asking().items():
-            rows = []
-            for role, chosen in roles.items():
-                try:
-                    now = (await brains.describe(role, app))[2]  # for anyone but the owner
-                except Exception as e:  # noqa: BLE001
-                    now = f"nothing answers: {e}"
-                if (chosen or self.roles.get(role, "")).startswith(SESSION_CHOICE) and role not in config.SESSION_ROLES:
-                    now = f"{now} (a quick role never goes to your Claude Code)"
-                rows.append({"role": role, "chosen": chosen, "now": now})
-            self.app_choices.append({"app": app, "roles": rows})
+        self.app_choices = await ask.app_rows(self.choices, self.roles)
         self.asks = [
             {
                 "at": time.strftime("%H:%M:%S", time.localtime(e.at)),
@@ -281,7 +268,11 @@ class HubState(rx.State):
         """The model an app's role answers with ("" = the role's own)."""
         if not await self._allowed():
             return
-        config.set_app_target(app, role, target)
+        try:
+            config.set_app_target(app, role, target)
+        except ValueError as e:
+            self.message = str(e)
+            return
         return HubState.load
 
     @rx.event
