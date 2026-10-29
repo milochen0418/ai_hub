@@ -323,6 +323,9 @@ class AssistantState(rx.State):
     files: list[dict[str, str]] = []
     uploading: str = ""
     _chat_id: str = ""
+    # What the page that opened the assistant showed when the message was sent (its
+    # window.__ddnsContext, through the intent), for the model with the message.
+    _context: str = ""
 
     @rx.event
     def set_draft(self, value: str):
@@ -449,6 +452,7 @@ class AssistantState(rx.State):
         async with self:
             if form_data is not None:
                 self.draft = str(form_data.get("draft") or "")
+                self._context = talk.context_text(form_data.get("context") or "")
             text = self.draft.strip()
             if not (text or self.files) or self.busy or self.uploading:
                 return
@@ -479,6 +483,7 @@ class AssistantState(rx.State):
             if not self._chat_id or self._chat_id not in _CHATS:
                 self._chat_id = uuid.uuid4().hex
             chat_id, role, scope = self._chat_id, self.role, agent.Scope(self.app, self.room)
+            context, self._context = self._context, ""
         chat = _CHATS.get(chat_id)
         if chat is None:
             chat = _CHATS[chat_id] = agent.Chat(role, scope, user="assistant")
@@ -503,7 +508,7 @@ class AssistantState(rx.State):
                     self.status = event["text"]
 
         try:
-            await chat.send(text, show, files)
+            await chat.send(text, show, files, context=context)
         except Exception as e:  # noqa: BLE001 — the person sees what went wrong
             await show({"type": "error", "text": f"{type(e).__name__}: {e}"})
         finally:

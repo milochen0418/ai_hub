@@ -638,6 +638,8 @@ def chat_view(dialog: bool = False) -> rx.Component:
                 id="assistant-input",
                 class_name=INPUT + " flex-1 resize-none",
             ),
+            # What the page that opened the assistant shows, kept fresh by the script below.
+            rx.el.input(type="hidden", name="context", id="assistant-context"),
             rx.el.button("Send", type="submit", disabled=AssistantState.busy | (AssistantState.uploading != ""), class_name=BUTTON),
             on_submit=AssistantState.send,
             reset_on_submit=True,
@@ -647,13 +649,26 @@ def chat_view(dialog: bool = False) -> rx.Component:
             """
 if (!window.__assistantChat) {
   window.__assistantChat = true;
+  // Opened from an app (an intent dialog), the assistant asks that page what it shows now (its
+  // window.__ddnsContext: the sheet and the selection, say) and sends it with each message.
+  const refreshContext = async () => {
+    const field = document.getElementById('assistant-context');
+    const page = window.__ddnsIntentPage;
+    if (!field) return;
+    if (!page || !page.ask) { field.value = ''; return; }
+    try {
+      const data = await page.ask(800);
+      field.value = data == null ? '' : JSON.stringify(data);
+    } catch (err) { field.value = ''; }
+  };
+  setInterval(refreshContext, 1500);
   document.addEventListener('keydown', (e) => {
     const el = document.getElementById('assistant-input');
     if (e.target === el && e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       // While the assistant works, Send is off: keep what was typed rather than clear it.
       const send = el.form && el.form.querySelector('button[type="submit"]');
-      if (el.form && !(send && send.disabled)) el.form.requestSubmit();
+      if (el.form && !(send && send.disabled)) refreshContext().then(() => el.form.requestSubmit());
     }
   });
   // A picture pasted into the box (a screenshot, say) is attached as if it were dropped. Pasted
