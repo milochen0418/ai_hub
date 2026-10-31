@@ -13,7 +13,7 @@ from typing import Any
 import reflex as rx
 from reflex_ddns_auth.intent import IntentPage
 
-from ai_hub import agent, ask, attachments, calls, config, registry, session, talk
+from ai_hub import agent, approvals, ask, attachments, calls, config, registry, session, talk
 from ai_hub.brains import openai_compat
 
 logger = logging.getLogger(__name__)
@@ -393,6 +393,7 @@ class AssistantState(rx.State):
     async def _new_chat(self) -> None:
         chat = _CHATS.pop(self._chat_id, None)
         if chat is not None:
+            approvals.forget(chat.id)
             # Claude Code on the owner's computer may still be on it: stop waiting for it there.
             await session.drop(chat.id)
         self._chat_id = ""
@@ -498,6 +499,10 @@ class AssistantState(rx.State):
                     self.messages.append({"kind": "assistant", "text": event["text"]})
                 elif kind == "tool":
                     self.messages.append({"kind": "tool", "text": event["name"]})
+                elif kind == "approve":
+                    self.messages.append({"kind": "approve", "id": event["id"], "title": event["title"], "text": event["summary"], "details": event["details"], "state": "pending"})
+                elif kind == "decided":
+                    self._card(event["id"], event["decision"])
                 elif kind in ("web", "note", "info"):
                     self.messages.append({"kind": kind, "text": event["text"]})
                 elif kind == "result":
@@ -515,6 +520,16 @@ class AssistantState(rx.State):
             async with self:
                 self.busy = False
                 self.status = ""
+
+    def _card(self, request: str, state: str) -> None:
+        self.messages = [{**m, "state": state} if m.get("kind") == "approve" and m.get("id") == request else m for m in self.messages]
+
+    @rx.event
+    def decide(self, request: str, decision: str):
+        """Accept, Accept all in this chat or Reject, on a change the AI asks to make. An answer
+        that comes too late (the hub restarted, say) closes the card."""
+        if not approvals.decide(request, decision):
+            self._card(request, approvals.TIMEOUT)
 
     @rx.event
     def close_dialog(self):

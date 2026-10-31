@@ -46,6 +46,12 @@ connect from there and can't reach a LAN-only host; agents on your machine can.
 Intent.start(None, "ai.assist", keep_alive=True, single=True, in_app="cad", room=CadState.current_room_id)
 ```
 
+A tool an app marks `danger` waits for the person: the chat shows what it would do with **Accept**,
+**Accept all in this chat** and **Reject**, and it runs only after an Accept (4 minutes without an
+answer count as no). That holds for the hub's own models and for the Claude Code on the owner's computer
+working on a chat (`ai_hub/approvals.py`); an agent of its own has no chat here, so its client asks its
+user. ReflexGrid's tools that change a workbook are such tools.
+
 The assistant runs the loop the models themselves don't: it gives the model the app's tools,
 calls the ones the model asks for (for the person, under the model's name), hands back the
 results, and goes on until the model is done. Opened from an app, it first reads the app's

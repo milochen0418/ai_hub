@@ -6,6 +6,9 @@ hands back the results, and asks again, until the model is done. People see each
 apps as it happens. ``Chat`` keeps one conversation going across messages. Files the person
 attaches go with their message, as what the model can take of them (``ai_hub.attachments``).
 
+A tool that changes things and is marked ``danger`` waits for the person's Accept in the chat
+(``ai_hub.approvals``).
+
 A role set to the Claude Code on the owner's computer is the exception: that is an agent with
 a loop of its own, so the message goes to it (``ai_hub.session``) and its steps come back.
 
@@ -22,7 +25,7 @@ import dataclasses
 import secrets
 from typing import Any, Awaitable, Callable, Sequence
 
-from ai_hub import attachments, brains, calls, config, registry, session
+from ai_hub import approvals, attachments, brains, calls, config, registry, session
 
 MAX_STEPS = 24
 
@@ -101,6 +104,15 @@ class Chat:
         found = await registry.tools(refresh=True)
         return [t for t in found if not self.scope.app or t.app == self.scope.app]
 
+    async def _refused(self, tool: registry.Tool, args: dict[str, Any], on_event: Callable[[Event], Awaitable[None]]) -> calls.Result | None:
+        """Why a tool may not run: a ``danger`` tool waits for the person's Accept in this chat
+        (``ai_hub.approvals``), and a talk has nowhere to show it. None when it may."""
+        if not approvals.needs_asking(tool):
+            return None
+        if self.manner != "assist":
+            return calls.Result(False, error=approvals.NOWHERE)
+        return await approvals.ask(self.id, tool, args, on_event)
+
     async def _guide(self, tools: list[registry.Tool]) -> str:
         """The app's guide (its ``<app>.guide`` tool), read once up front so that even a small
         model starts out knowing the app's rules."""
@@ -161,7 +173,7 @@ class Chat:
                 if tool is None:
                     result = calls.Result(False, error=f"there is no tool named {call.name!r}")
                 else:
-                    result = await calls.call(tool, args, self.user, via="assistant")
+                    result = await self._refused(tool, args, on_event) or await calls.call(tool, args, self.user, via="assistant")
                 await on_event(
                     {
                         "type": "result",

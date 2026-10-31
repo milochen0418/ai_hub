@@ -489,10 +489,41 @@ def file_chip(f: rx.Var) -> rx.Component:
     )
 
 
+def approve_card(m: rx.Var) -> rx.Component:
+    """A change the AI asks to make (``ai_hub.approvals``): what it would do, and the answers."""
+
+    def answer(label: str, decision: str, style: str) -> rx.Component:
+        return rx.el.button(label, type="button", on_click=AssistantState.decide(m["id"], decision), class_name=style + " approve-" + decision)
+
+    return rx.el.div(
+        rx.el.div("The AI wants to make this change: " + m["title"], class_name="text-xs font-semibold text-amber-900"),
+        rx.cond(m["text"] != "", rx.el.div(m["text"], class_name="approve-summary text-sm text-slate-900 whitespace-pre-wrap")),
+        rx.cond(m["details"] != "", rx.el.pre(m["details"], class_name="approve-details text-xs font-mono text-slate-700 bg-white border border-amber-200 rounded-lg p-2 max-h-56 overflow-auto whitespace-pre-wrap")),
+        rx.match(
+            m["state"],
+            (
+                "pending",
+                rx.el.div(
+                    answer("Accept", "accept", BUTTON),
+                    answer("Accept all in this chat", "all", SUBTLE_BUTTON),
+                    answer("Reject", "reject", SUBTLE_BUTTON),
+                    class_name="flex gap-2 items-center flex-wrap",
+                ),
+            ),
+            ("accept", rx.el.div("✓ Accepted", class_name="approve-state text-xs font-semibold text-emerald-700")),
+            ("all", rx.el.div("✓ Accepted (and the rest of this chat)", class_name="approve-state text-xs font-semibold text-emerald-700")),
+            ("reject", rx.el.div("✗ Rejected: nothing changed", class_name="approve-state text-xs font-semibold text-red-700")),
+            rx.el.div("No answer in time: nothing changed", class_name="approve-state text-xs font-semibold text-slate-600"),
+        ),
+        class_name="approve-card shrink-0 self-start w-[92%] flex flex-col gap-2 bg-amber-50 border border-amber-300 rounded-2xl px-3 py-2",
+    )
+
+
 def message_row(m: rx.Var) -> rx.Component:
     # shrink-0: once the list scrolls, flex would squeeze the truncated rows to nothing.
     return rx.match(
         m["kind"],
+        ("approve", approve_card(m)),
         ("user", rx.el.div(m["text"], class_name="shrink-0 self-end max-w-[80%] bg-emerald-600 text-white rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap")),
         # A file that went with the person's message.
         (
@@ -585,7 +616,8 @@ def chat_view(dialog: bool = False) -> rx.Component:
                 rx.cond(
                     AssistantState.app != "",
                     rx.el.span(
-                        " · " + AssistantState.app + rx.cond(AssistantState.room != "", " / " + AssistantState.room, ""),
+                        # A room may say more after "~" (which tab of the app, for its tools).
+                        " · " + AssistantState.app + rx.cond(AssistantState.room != "", " / " + AssistantState.room.split("~")[0], ""),
                         class_name="text-sm text-slate-500",
                     ),
                 ),

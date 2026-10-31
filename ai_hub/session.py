@@ -234,6 +234,17 @@ async def tool_called(token_id: str, name: str, args: dict[str, Any]) -> None:
         await turn.events.put({"type": "status"})
 
 
+def chat_to_ask(token_id: str) -> tuple[str, Callable[[Event], Awaitable[None]]] | None:
+    """The chat to ask the person in about a tool call with this token, and how to show something
+    there: None when the token isn't the session's, or the session works on no chat (the owner
+    typed in its terminal)."""
+    turn = _current
+    if turn is None or not token_id or token_id != config.session_token_id():
+        return None
+    turn.now_doing("waiting for you to accept or reject a change")
+    return turn.chat, turn.events.put
+
+
 async def tool_done(token_id: str, name: str, result: calls.Result) -> None:
     turn = _current
     if turn is not None and token_id and token_id == config.session_token_id():

@@ -21,7 +21,7 @@ from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, Streamable
 from starlette.responses import JSONResponse
 from starlette.types import Receive, Scope, Send
 
-from ai_hub import calls, config, registry, session
+from ai_hub import approvals, calls, config, registry, session
 
 PATH = "/api/mcp"
 INSTRUCTIONS = (
@@ -57,6 +57,15 @@ async def _list_tools(ctx: Any, params: types.PaginatedRequestParams | None) -> 
     return types.ListToolsResult(tools=[_mcp_tool(t) for t in await registry.tools()])
 
 
+async def _refused(tool: registry.Tool, args: dict[str, Any]) -> calls.Result | None:
+    """A ``danger`` tool called by the Claude Code working on a chat waits for the person's Accept
+    there (``ai_hub.approvals``). Any other agent has no chat here: its client asks its user."""
+    chat = session.chat_to_ask(_token_id.get()) if approvals.needs_asking(tool) else None
+    if chat is None:
+        return None
+    return await approvals.ask(chat[0], tool, args, chat[1])
+
+
 async def _call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
     tool = await registry.find(params.name)
     if tool is None:
@@ -67,7 +76,7 @@ async def _call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
     args = params.arguments or {}
     # The Claude Code on the owner's computer works for a chat in the assistant: it shows there.
     await session.tool_called(_token_id.get(), params.name, args)
-    result = await calls.call(tool, args, _user.get() or "agent", via="mcp")
+    result = await _refused(tool, args) or await calls.call(tool, args, _user.get() or "agent", via="mcp")
     await session.tool_done(_token_id.get(), params.name, result)
     if result.ok and result.images:
         # The words (with "(picture N)" where each was), then the pictures in that order.
