@@ -3,6 +3,7 @@ name = "ai-hub"
 version = "0.1.0"
 description = "AI Hub: one door between AI (Claude, Ollama, agents over MCP) and the apps of re_ddns"
 authors = ["Milo Chen"]
+license = "MIT"
 readme = "README.md"
 package-mode = false
 

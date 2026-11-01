@@ -280,3 +280,7 @@ DDNS_AUTH_SECRET=... AI_HUB_APPS="cad=http://localhost:8001" poetry run reflex r
 ```
 
 Tests: `poetry run pytest`.
+
+## License
+
+[MIT](LICENSE)
