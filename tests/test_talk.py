@@ -47,6 +47,16 @@ def test_context_text_takes_the_text_of_a_page():
     assert len(talk.context_text("x" * 5000)) == 1500
 
 
+def test_whisper_hears_what_the_page_expects():
+    session = talk._Session(None, "zh-TW", "巨集、工作表 " + "x" * 1000)
+    assert len(session.hint) == talk.HINT_CHARS and session.prompt().startswith("巨集、工作表")
+    session = talk._Session(None, "zh-TW", "巨集")
+    assert session.prompt() == "巨集"
+    session.context = "剛剛說的話"
+    assert session.prompt() == "巨集 剛剛說的話"
+    assert talk._Session(None, "").prompt() == ""
+
+
 def test_with_context_goes_in_front_of_the_message():
     assert agent.with_context("hi", "") == "hi"
     assert agent.with_context("hi", " inside\nthe chapel ") == "[What the person's page shows now: inside the chapel]\n\nhi"

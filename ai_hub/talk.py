@@ -2,7 +2,7 @@
 
     GET  /api/talk/status                    how ready the voice is (the models download on first use)
     POST /api/talk/tts   {"text", "lang"}    the words as a WAV (24 kHz, mono)
-    WS   /api/talk/stt?lang=zh-TW            the microphone in (16 kHz 16-bit PCM), words out:
+    WS   /api/talk/stt?lang=zh-TW&hint=...   the microphone in (16 kHz 16-bit PCM), words out:
                                              {"type": "subtitle", "seg", "text", "final"}
                                              {"type": "status", "phase", "progress", "message"}
 
@@ -16,7 +16,8 @@ Hearing: faster-whisper (``AI_HUB_WHISPER_MODEL``, default ``small``, about 480 
 once into ``<AI_HUB_DATA>/voice/whisper/``), as reflex_ddns_livekit_english_chat does it: the
 browser streams its microphone, a pause ends a segment (by loudness), a growing segment is
 transcribed again about once a second (partial), and once more carefully at the pause (final).
-Traditional Chinese (``lang=zh-TW``) comes out in Traditional characters (OpenCC).
+Traditional Chinese (``lang=zh-TW``) comes out in Traditional characters (OpenCC). ``hint`` is what
+the page expects to be said, the words of its trade: Whisper mishears them less.
 
 Both load lazily in threads (``start``) and say how far they are (``status``); the browser uses
 its own speech while they aren't ready, or on a Python without their wheels (3.15 as of now).
@@ -78,6 +79,7 @@ MAX_SEGMENT_S = 20.0  # longer speech is cut into segments anyway
 MIN_SPEECH_S = 0.3  # shorter sounds (a cough, a click) are dropped
 PARTIAL_EVERY_S = 1.0  # how often a growing segment is transcribed again
 IDLE_END_S = 1.0  # no audio for this long (muted, tab asleep) ends a segment
+HINT_CHARS = 400  # of what a page says to expect
 
 MOODS = ("neutral", "happy", "laughing", "surprised", "thinking", "sad", "angry", "wink")
 # What a model may write instead of the English tag.
@@ -529,9 +531,10 @@ class _Speaker:
 class _Session:
     """One browser's microphone: audio in, words out."""
 
-    def __init__(self, ws: WebSocket, lang: str) -> None:
+    def __init__(self, ws: WebSocket, lang: str, hint: str = "") -> None:
         self.ws = ws
         self.lang = lang
+        self.hint = hint[:HINT_CHARS]
         self.speaker = _Speaker(self._started, self._ended)
         self.seg = 0
         self.finals: collections.deque = collections.deque()
@@ -546,6 +549,10 @@ class _Session:
 
     def _started(self) -> None:
         self.partial_at = time.monotonic()
+
+    def prompt(self) -> str:
+        """What Whisper is told before it listens: what to expect, and what was just said."""
+        return f"{self.hint} {self.context}".strip()
 
     def _ended(self, audio) -> None:
         seg = self.seg
@@ -602,7 +609,7 @@ class _Session:
             while self.finals or self.partial:
                 if self.finals:
                     seg, audio = self.finals.popleft()
-                    text = await ears.transcribe(audio, self.context, final=True, lang=self.lang) if audio is not None else ""
+                    text = await ears.transcribe(audio, self.prompt(), final=True, lang=self.lang) if audio is not None else ""
                     if text:
                         self.context = text[-200:]
                     if text or seg in self.shown:
@@ -613,7 +620,7 @@ class _Session:
                 self.partial = None
                 if seg != self.seg or not self.speaker.speaking:
                     continue
-                text = await ears.transcribe(audio, self.context, final=False, lang=self.lang)
+                text = await ears.transcribe(audio, self.prompt(), final=False, lang=self.lang)
                 if text and seg == self.seg and self.speaker.speaking:
                     self.shown.add(seg)
                     await self._send({"type": "subtitle", "seg": seg, "text": text, "final": False})
@@ -659,7 +666,7 @@ async def tts_endpoint(request: Request) -> Response:
 async def stt_socket(ws: WebSocket) -> None:
     await ws.accept()
     start()
-    await _Session(ws, str(ws.query_params.get("lang") or "")).run()
+    await _Session(ws, str(ws.query_params.get("lang") or ""), str(ws.query_params.get("hint") or "")).run()
 
 
 def register(app) -> None:  # noqa: ANN001 — a Reflex App
