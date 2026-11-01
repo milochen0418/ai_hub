@@ -36,7 +36,7 @@ from reflex_ddns_auth import ai as protocol
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from ai_hub import brains, config, registry
+from ai_hub import brains, config, music, registry
 
 logger = logging.getLogger(__name__)
 
@@ -172,10 +172,14 @@ async def app_rows(choices: list[str], roles: dict[str, str]) -> list[dict[str, 
     session_choice = f"{config.SESSION}/"
     said = await registry.ai_uses()
     asked = config.apps_asking()
+    engine = await music.status(timeout=4.0) if any("music" in s for s in said.values()) else {}
     out = []
     for app in sorted(set(said) | set(asked)):
         words = {role: w for role, w in said.get(app, {}).items() if role in config.ROLES}
         rows = []
+        if said.get(app, {}).get("music"):
+            now = "ready" if engine.get("ok") else str(engine.get("why") or "no engine")
+            rows.append({"role": "music", "title": said[app]["music"], "note": f"music engine · now: {now}", "chosen": "", "options": []})
         for role in [*words, *(r for r in asked.get(app, {}) if r not in words)]:
             chosen = config.app_target(app, role)
             try:
@@ -198,5 +202,5 @@ async def app_rows(choices: list[str], roles: dict[str, str]) -> list[dict[str, 
                     "options": ["", *options],
                 }
             )
-        out.append({"app": app, "said": bool(words), "roles": rows})
+        out.append({"app": app, "said": bool(words) or bool(said.get(app, {}).get("music")), "roles": rows})
     return out

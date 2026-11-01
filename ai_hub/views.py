@@ -236,7 +236,10 @@ def app_role_row(app: rx.Var, r: rx.Var) -> rx.Component:
             rx.el.span(r["note"], class_name="text-xs text-slate-500"),
             class_name="flex flex-col w-64 shrink-0",
         ),
-        rx.el.select(
+        rx.cond(
+            r["role"] == "music",
+            rx.el.span("the music engine (see its card)", class_name="text-sm text-slate-500 flex-1"),
+            rx.el.select(
             rx.foreach(
                 r["options"].to(list[str]),
                 lambda c: rx.el.option(
@@ -248,8 +251,88 @@ def app_role_row(app: rx.Var, r: rx.Var) -> rx.Component:
             on_change=lambda v: HubState.set_app_target(app, r["role"], v),
             disabled=HubState.locked,
             class_name=INPUT + " flex-1",
+            ),
         ),
         class_name="flex items-center gap-3",
+    )
+
+
+def music_card() -> rx.Component:
+    """The music engine on the Mac: what it is, what this Mac can hold, and the way to get it."""
+    busy = HubState.music_install_words.startswith("installing")
+    return rx.el.section(
+        rx.el.div(
+            rx.el.h2("Music engine (ACE-Step on this Mac)", class_name=H2),
+            rx.el.button("Refresh", on_click=HubState.music_refresh, class_name=SUBTLE_BUTTON),
+            class_name="flex items-center justify-between",
+        ),
+        rx.el.p(
+            "Makes songs with singing from a description and lyrics, and remakes recordings, for Music Studio and any "
+            "app that asks. It runs on the Mac itself, not in Docker, because it needs the Mac's graphics chip; the "
+            "apps reach it only through this hub.",
+            class_name=MUTED,
+        ),
+        rx.match(
+            HubState.music_state,
+            (
+                "none",
+                rx.el.div(
+                    rx.el.p("Not set up on this Mac.", class_name="text-sm font-medium text-amber-700"),
+                    rx.el.p("On the Mac that runs Docker, in the re_ddns folder:", class_name=MUTED),
+                    rx.el.code("./macos_music_engine.sh --install", class_name="text-sm bg-slate-100 rounded px-2 py-1 w-fit"),
+                    rx.el.p(
+                        "It needs Apple Silicon and 16 GB of memory or more, and about 13 to 15 GB on the disk (the "
+                        "weights in the size that fits the Mac, plus the engine's Python). The script picks the size, "
+                        "says what it will download, and asks before it does. Until then the apps make instrumental music only.",
+                        class_name=MUTED,
+                    ),
+                    rx.el.p(HubState.music["why"].to(str), class_name="text-xs text-slate-400"),
+                    class_name="flex flex-col gap-2",
+                ),
+            ),
+            (
+                "helper",
+                rx.el.div(
+                    rx.el.p("The helper runs; the engine isn't installed yet.", class_name="text-sm font-medium text-amber-700"),
+                    rx.foreach(HubState.music_lines, lambda line: rx.el.p(line, class_name=MUTED)),
+                    rx.cond(
+                        HubState.music["fits"].to(bool),
+                        rx.el.div(
+                            rx.el.button(
+                                "Install the engine on this Mac",
+                                on_click=HubState.music_install,
+                                disabled=HubState.locked | busy,
+                                class_name=BUTTON,
+                            ),
+                            rx.el.span(HubState.music_install_words, class_name=MUTED),
+                            class_name="flex items-center gap-3",
+                        ),
+                        rx.el.p("Free some disk, or pick a smaller size: ./macos_music_engine.sh --install --tier small", class_name=MUTED),
+                    ),
+                    class_name="flex flex-col gap-2",
+                ),
+            ),
+            rx.el.div(
+                rx.el.p("Installed.", class_name="text-sm font-medium text-emerald-700"),
+                rx.foreach(HubState.music_lines, lambda line: rx.el.p(line, class_name=MUTED)),
+                rx.el.div(
+                    rx.el.button("Start the server now", on_click=HubState.music_start, disabled=HubState.locked, class_name=SUBTLE_BUTTON),
+                    rx.el.button("Stop it", on_click=HubState.music_stop, disabled=HubState.locked, class_name=SUBTLE_BUTTON),
+                    class_name="flex gap-2",
+                ),
+                class_name="flex flex-col gap-2",
+            ),
+        ),
+        rx.cond(
+            HubState.locked,
+            rx.fragment(),
+            rx.el.div(
+                rx.el.input(placeholder="Helper address, e.g. http://host.docker.internal:3144", value=HubState.music_url, on_change=HubState.set_music_url, class_name=INPUT + " flex-1"),
+                rx.el.button("Save", on_click=HubState.save_music_url, class_name=SUBTLE_BUTTON),
+                class_name="flex gap-2 items-center pt-1",
+            ),
+        ),
+        class_name=CARD,
     )
 
 
@@ -449,6 +532,7 @@ def hub_page() -> rx.Component:
         connect_card(),
         apps_card(),
         models_card(),
+        music_card(),
         app_models_card(),
         session_card(),
         log_card(),

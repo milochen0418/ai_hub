@@ -13,7 +13,7 @@ from typing import Any
 import reflex as rx
 from reflex_ddns_auth.intent import IntentPage
 
-from ai_hub import agent, approvals, ask, attachments, calls, config, registry, session, talk
+from ai_hub import agent, approvals, ask, attachments, calls, config, music, registry, session, talk
 from ai_hub.brains import openai_compat
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,13 @@ class HubState(rx.State):
     anthropic_key: str = ""
     openai_key: str = ""
     ollama_url: str = ""
+    # The music engine on the Mac (ai_hub.music): its status, and what the page says of it.
+    music: dict[str, Any] = {}
+    music_state: str = "none"  # none (no helper), helper (no engine yet), installed
+    music_lines: list[str] = []
+    music_install_words: str = ""
+    music_url: str = ""
+    music_following: bool = False
 
     @rx.var
     def hub_url(self) -> str:
@@ -200,6 +207,7 @@ class HubState(rx.State):
             for e in list(calls.LOG)[:30]
         ]
         self.app_choices = await ask.app_rows(self.choices, self.roles)
+        await self._music_status()
         self.asks = [
             {
                 "at": time.strftime("%H:%M:%S", time.localtime(e.at)),
@@ -302,6 +310,97 @@ class HubState(rx.State):
             return
         config.set_provider(provider, api_key="")
         return HubState.load
+
+    # ------------------------------------------------------------ the music engine
+
+    async def _music_status(self) -> None:
+        status = await music.status(timeout=5.0)
+        self.music = status
+        self.music_url = status.get("url") or ""
+        self.music_install_words = music.install_words(status)
+        if not status.get("helper"):
+            self.music_state = "none"
+            self.music_lines = []
+            return
+        tier = str(status.get("tier") or "")
+        tiers = status.get("tiers") or {}
+        words = tiers.get(tier, {})
+        self.music_lines = [
+            f"This Mac: {status.get('memory_gb')} GB of memory, {status.get('disk_free_gb')} GB free on the disk.",
+            f"Size for it: {tier}, {words.get('words', '')}, {words.get('gb', '?')} GB of weights.",
+        ]
+        if status.get("installed"):
+            self.music_state = "installed"
+            server = str(status.get("server") or "stopped")
+            idle = status.get("idle_minutes")
+            self.music_lines.append(
+                {"stopped": f"The engine's server is stopped: it starts when a song is asked for and stops after {idle} min idle.", "starting": "The engine's server is starting (loading its models).", "ready": f"The engine's server is ready; it stops after {idle} min idle.", "busy": "The engine is making a song.", "failed": f"The engine's server failed: {status.get('server_error')}"}.get(server, server)
+            )
+        else:
+            self.music_state = "helper"
+            if not status.get("fits", True):
+                self.music_lines.append(f"It doesn't fit: {status.get('why_not')}.")
+            elif status.get("code") and status.get("missing"):
+                self.music_lines.append(f"The code is here; weights still missing: {', '.join(status.get('missing') or [])}.")
+
+    @rx.event
+    async def music_refresh(self):
+        await self._music_status()
+
+    @rx.event
+    async def music_install(self):
+        if not await self._allowed():
+            return
+        why = await music.install()
+        self.message = why or "Installing the music engine on the Mac: the weights download in the background."
+        await self._music_status()
+        if not why and not self.music_following:
+            return HubState.music_follow
+
+    @rx.event(background=True)
+    async def music_follow(self):
+        """Keeps the install's progress on the page while it runs."""
+        async with self:
+            self.music_following = True
+        try:
+            for _ in range(720):
+                await asyncio.sleep(5)
+                async with self:
+                    await self._music_status()
+                    state = (self.music.get("install") or {}).get("state")
+                if state != "running":
+                    return
+        finally:
+            async with self:
+                self.music_following = False
+
+    @rx.event
+    async def music_start(self):
+        if not await self._allowed():
+            return
+        why = await music.start()
+        self.message = why or "The engine's server is starting."
+        await self._music_status()
+
+    @rx.event
+    async def music_stop(self):
+        if not await self._allowed():
+            return
+        why = await music.stop()
+        self.message = why or "The engine's server is stopped."
+        await self._music_status()
+
+    @rx.event
+    def set_music_url(self, value: str):
+        self.music_url = value
+
+    @rx.event
+    async def save_music_url(self):
+        if not await self._allowed():
+            return
+        music.set_helper_url(self.music_url)
+        self.message = "Saved."
+        await self._music_status()
 
 
 class AssistantState(rx.State):

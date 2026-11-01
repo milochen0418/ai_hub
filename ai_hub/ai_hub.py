@@ -8,14 +8,15 @@
   app (``reflex_ddns_auth.companion.ai_button``), knowing what that app's page shows
 - ``/api/talk/*``: its voice, Whisper and Kokoro on the hub (ai_hub.talk)
 - ``/api/session/*``: for the channel of the Claude Code on the owner's computer (ai_hub.session)
-- ``/api/ai/*``: the apps ask the hub's models, through ``reflex_ddns_auth.ai`` (ai_hub.ask)
+- ``/api/ai/*``: the apps ask the hub's models, through ``reflex_ddns_auth.ai`` (ai_hub.ask), and
+  the music engine on the Mac for songs (ai_hub.music)
 """
 
 import reflex as rx
 from reflex_ddns_auth.intent import intent
 from starlette.routing import Route
 
-from ai_hub import ask, mcp_endpoint, session, talk
+from ai_hub import ask, mcp_endpoint, music, session, talk
 from ai_hub.states import AssistantState, HubState, TalkState
 from ai_hub.views import assistant_dialog, assistant_page, hub_page, talk_dialog, talk_page
 
@@ -59,4 +60,7 @@ app._api.routes.append(Route(session.ACTIVITY_PATH, session.activity, methods=["
 app._api.routes.append(Route(session.ATTACHMENT_PATH, session.attachment, methods=["GET"]))
 app._api.routes.append(Route(ask.STREAM_PATH, ask.stream, methods=["POST"]))
 app._api.routes.append(Route(ask.STATUS_PATH, ask.status, methods=["GET"]))
+app._api.routes.append(Route(music.STATUS_PATH, music.status_endpoint, methods=["GET"]))
+app._api.routes.append(Route(music.MAKE_PATH, music.make_endpoint, methods=["POST"]))
+app._api.routes.append(Route(music.AUDIO_PATH, music.audio_endpoint, methods=["GET"]))
 app.register_lifespan_task(mcp_endpoint.lifespan)
