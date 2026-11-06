@@ -76,7 +76,10 @@ async def _call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
     args = params.arguments or {}
     # The Claude Code on the owner's computer works for a chat in the assistant: it shows there.
     await session.tool_called(_token_id.get(), params.name, args)
-    result = await _refused(tool, args) or await calls.call(tool, args, _user.get() or "agent", via="mcp")
+    # An app may ask the person's OK in the middle of a call: in the chat the session works for.
+    chat = session.chat_to_ask(_token_id.get())
+    result = await _refused(tool, args) or await approvals.call_asking(
+        tool, args, _user.get() or "agent", "mcp", chat[0] if chat else None, chat[1] if chat else None)
     await session.tool_done(_token_id.get(), params.name, result)
     if result.ok and result.images:
         # The words (with "(picture N)" where each was), then the pictures in that order.

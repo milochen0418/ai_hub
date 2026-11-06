@@ -234,3 +234,96 @@ async def test_claude_code_working_on_no_chat_and_other_agents_arent_asked_here(
     await call_through_mcp(other, "grid_edit")  # another agent's client asks its own user
     assert mcp_world == ["grid.edit", "grid.edit"]
     assert turn.events.empty()
+
+
+# ---------------------------------------------------------------- an app asks for the person's OK in the middle of a call
+
+READ = registry.Tool(app="forge", name="forge.read_file", title="Read a file", description="", kind="read",
+                     input_schema={"type": "object", "properties": {"path": {"type": "string"}}}, backend="http://forge")
+
+
+@pytest.fixture
+def asking_app(monkeypatch):
+    """forge.read_file asks first for chip/ files, and reads them only with the consent of that call."""
+    seen = []
+
+    async def fake_call(tool, args, user, via, consent=""):
+        seen.append(consent)
+        if args.get("path", "").startswith("chip/") and consent != "k1":
+            return calls.Result(False, error="this needs the person's OK first: read chip/rtl/top.sv",
+                                ask={"what": "read chip/rtl/top.sv", "detail": "The chip's source isn't open to the AI.", "key": "k1"})
+        return calls.Result(True, {"text": "module top;"})
+
+    async def fake_tools(refresh: bool = False):
+        return [READ]
+
+    monkeypatch.setattr(calls, "call", fake_call)
+    monkeypatch.setattr(registry, "tools", fake_tools)
+    return seen
+
+
+@pytest.mark.parametrize(("answer", "ok"), [(approvals.ACCEPT, True), (approvals.REJECT, False)])
+async def test_an_app_can_ask_first_and_the_call_goes_on_only_when_allowed(asking_app, answer, ok) -> None:
+    chat = Chat(answer)
+    result = await approvals.call_asking(READ, {"path": "chip/rtl/top.sv"}, "u", "assistant", "c1", chat.post)
+    assert result.ok is ok
+    card = next(e for e in chat.events if e["type"] == "approve")
+    assert card["ask"] == "read" and card["summary"] == "read chip/rtl/top.sv" and "isn't open" in card["details"]
+    assert asking_app == (["", "k1"] if ok else [""])  # called again with the consent only after an Allow
+    if not ok:
+        assert "didn't allow" in result.error
+
+
+async def test_open_files_need_no_ok_and_allow_all_lasts_for_the_chat(asking_app) -> None:
+    chat = Chat(approvals.ACCEPT_ALL)
+    assert (await approvals.call_asking(READ, {"path": "system.yaml"}, "u", "assistant", "c1", chat.post)).ok
+    assert "approve" not in chat.kinds()
+    assert (await approvals.call_asking(READ, {"path": "chip/a.sv"}, "u", "assistant", "c1", chat.post)).ok
+    quiet = Chat()
+    assert (await approvals.call_asking(READ, {"path": "chip/b.sv"}, "u", "assistant", "c1", quiet.post)).ok
+    assert "approve" not in quiet.kinds()  # this chat allowed everything already
+
+
+async def test_with_no_chat_to_ask_in_the_model_is_told_so(asking_app) -> None:
+    result = await approvals.call_asking(READ, {"path": "chip/rtl/top.sv"}, "u", "mcp", None, None)
+    assert not result.ok and "only the assistant's chat" in result.error and "chip/rtl/top.sv" in result.error
+
+
+async def test_the_assistant_asks_for_the_ok_in_its_chat(asking_app, monkeypatch) -> None:
+    fake = FakeConversation([brains.Step(calls=[brains.ToolCall("c0", "forge_read_file", {"path": "chip/rtl/top.sv"})]), brains.Step(text="Done.")])
+
+    async def fake_conversation(role, system):
+        return fake
+
+    monkeypatch.setattr(brains, "conversation", fake_conversation)
+    chat = Chat(approvals.ACCEPT)
+    await agent.Chat("smart", agent.Scope(app="forge", room="p1"), user="u").send("read the chip", chat.post)
+    assert "approve" in chat.kinds() and fake.results[0][0][1].ok
+    talk = Chat(approvals.ACCEPT)
+    fake2 = FakeConversation([brains.Step(calls=[brains.ToolCall("c0", "forge_read_file", {"path": "chip/rtl/top.sv"})]), brains.Step(text="Done.")])
+
+    async def fake_conversation2(role, system):
+        return fake2
+
+    monkeypatch.setattr(brains, "conversation", fake_conversation2)
+    await agent.Chat("smart", agent.Scope(app="forge"), user="u", manner="talk").send("read the chip", talk.post)
+    assert "approve" not in talk.kinds() and not fake2.results[0][0][1].ok  # a talk has nowhere to ask
+
+
+async def test_claude_code_on_a_chat_asks_for_the_ok_there(asking_app, monkeypatch) -> None:
+    async def fake_find(name: str):
+        return READ if name == "forge_read_file" else None
+
+    monkeypatch.setattr(registry, "find", fake_find)
+    token = config.make_session_token()
+    turn = session._Turn("c1", "read the chip", "forge", "p1", asyncio.Queue(), delivered=time.monotonic())
+    monkeypatch.setattr(session, "_current", turn)
+    answering = asyncio.create_task(answer_the_card(turn, approvals.ACCEPT))
+    async with mcp_endpoint.lifespan():
+        app = Starlette(routes=[Route(mcp_endpoint.PATH, mcp_endpoint.endpoint)])
+        http = httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://hub", headers={"Authorization": f"Bearer {token}"})
+        async with Client(streamable_http_client("http://hub/api/mcp", http_client=http)) as client:
+            out = await client.call_tool("forge_read_file", {"path": "chip/rtl/top.sv"})
+    shown = await answering
+    assert not out.is_error and "module top" in out.content[0].text
+    assert any(e["type"] == "approve" and e.get("ask") == "read" for e in shown)

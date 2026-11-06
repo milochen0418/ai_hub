@@ -1,5 +1,8 @@
 """Asking the person before a ``danger`` tool runs (``reflex_ddns_auth.tools``: an app marks the
-tools whose changes must wait for a person's yes).
+tools whose changes must wait for a person's yes), and when an app asks for their OK in the middle
+of a call (``reflex_ddns_auth.tools.ask_first``: to read a file that isn't open to the AI, say):
+then the chat shows what the AI wants with Allow, Allow all in this chat and Decline, and on an
+Allow the hub calls again with the person's consent for exactly that call (``call_asking``).
 
 When a model working in an assistant chat calls one, the call waits here: the chat shows what
 the tool would do with Accept, Accept all in this chat and Reject (``AssistantState.decide``),
@@ -30,6 +33,9 @@ ACCEPT, ACCEPT_ALL, REJECT, TIMEOUT = "accept", "all", "reject", "timeout"
 REJECTED = "The person rejected this change, so nothing was changed. Ask what they want instead; don't try it again as it is."
 NO_ANSWER = "The person didn't answer in time, so nothing was changed. Ask them before trying again."
 NOWHERE = "This change needs the person's Accept, which only the assistant's chat can ask for, so nothing was changed. Tell them to ask the assistant."
+DECLINED = "The person didn't allow this, so it wasn't done: {what}. Work without it, or ask them why."
+NO_ANSWER_ASK = "The person didn't answer in time, so it wasn't done: {what}. Ask them before trying again."
+NOWHERE_ASK = "This needs the person's OK, which only the assistant's chat can ask for, so it wasn't done: {what}. Tell them to ask the assistant."
 
 Event = dict[str, Any]
 
@@ -84,15 +90,43 @@ def describe(args: dict[str, Any]) -> tuple[str, str]:
 async def ask(chat: str, tool: Tool, args: dict[str, Any], post: Callable[[Event], Awaitable[None]]) -> calls.Result | None:
     """Waits for the person's answer in ``chat`` (``post`` shows things there): None when the
     tool may run, else the result that tells the model why it didn't."""
-    if chat in _trusted:
+    summary, details = describe(args)
+    decision = await _answer(chat, post, {"title": f"{tool.title} ({tool.app})", "summary": summary, "details": details},
+                             "Waiting for you to accept or reject the change")
+    if decision in (ACCEPT, ACCEPT_ALL):
         return None
+    return calls.Result(False, error=NO_ANSWER if decision == TIMEOUT else REJECTED)
+
+
+async def call_asking(tool: Tool, args: dict[str, Any], user: str, via: str,
+                      chat: str | None, post: Callable[[Event], Awaitable[None]] | None) -> calls.Result:
+    """Calls the tool; when the app asks for the person's OK first, asks in ``chat`` and, when
+    they allow it, calls again with their consent. With no chat to ask in, the model is told so."""
+    result = await calls.call(tool, args, user, via)
+    if result.ok or not result.ask:
+        return result
+    what = str(result.ask.get("what") or tool.title)
+    if chat is None or post is None:
+        return calls.Result(False, error=NOWHERE_ASK.format(what=what))
+    decision = await _answer(chat, post, {"ask": "read", "title": f"{tool.title} ({tool.app})", "summary": what,
+                                          "details": str(result.ask.get("detail") or "")},
+                             "Waiting for you to allow or decline")
+    if decision not in (ACCEPT, ACCEPT_ALL):
+        return calls.Result(False, error=(NO_ANSWER_ASK if decision == TIMEOUT else DECLINED).format(what=what))
+    return await calls.call(tool, args, user, via, consent=str(result.ask.get("key") or ""))
+
+
+async def _answer(chat: str, post: Callable[[Event], Awaitable[None]], card: dict[str, Any], waiting: str) -> str:
+    """Shows the card in ``chat`` and waits for the person's answer (at once in a chat where they
+    accepted everything)."""
+    if chat in _trusted:
+        return ACCEPT_ALL
     request = secrets.token_hex(6)
     answer: asyncio.Future = asyncio.get_running_loop().create_future()
     _pending[request] = (chat, answer)
-    summary, details = describe(args)
     try:
-        await post({"type": "approve", "id": request, "title": f"{tool.title} ({tool.app})", "summary": summary, "details": details})
-        await post({"type": "status", "text": "Waiting for you to accept or reject the change"})
+        await post({"type": "approve", "id": request, **card})
+        await post({"type": "status", "text": waiting})
         try:
             decision = await asyncio.wait_for(asyncio.shield(answer), WAIT)
         except asyncio.TimeoutError:
@@ -108,9 +142,7 @@ async def ask(chat: str, tool: Tool, args: dict[str, Any], post: Callable[[Event
         _trusted.add(chat)
     await post({"type": "decided", "id": request, "decision": decision})
     await post({"type": "status", "text": ""})
-    if decision in (ACCEPT, ACCEPT_ALL):
-        return None
-    return calls.Result(False, error=NO_ANSWER if decision == TIMEOUT else REJECTED)
+    return decision
 
 
 def decide(request: str, decision: str) -> bool:

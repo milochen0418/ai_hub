@@ -173,7 +173,8 @@ class Chat:
                 if tool is None:
                     result = calls.Result(False, error=f"there is no tool named {call.name!r}")
                 else:
-                    result = await self._refused(tool, args, on_event) or await calls.call(tool, args, self.user, via="assistant")
+                    result = await self._refused(tool, args, on_event) or await approvals.call_asking(
+                        tool, args, self.user, "assistant", self.id if self.manner == "assist" else None, on_event)
                 await on_event(
                     {
                         "type": "result",

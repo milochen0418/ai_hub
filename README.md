@@ -52,6 +52,12 @@ answer count as no). That holds for the hub's own models and for the Claude Code
 working on a chat (`ai_hub/approvals.py`); an agent of its own has no chat here, so its client asks its
 user. ReflexGrid's tools that change a workbook are such tools.
 
+An app can also ask for the person's OK in the middle of a call, for what it only knows then
+(`reflex_ddns_auth.tools.ask_first`): Chipova Forge reads a product's own files and the outputs its
+page shows at once, and asks first for the chip's sources and other outputs. The chat then shows
+**Allow**, **Allow all in this chat** and **Decline**; on Allow the hub calls again with the person's
+consent for exactly that call, signed in its token, and on Decline the model is told it wasn't done.
+
 The assistant runs the loop the models themselves don't: it gives the model the app's tools,
 calls the ones the model asks for (for the person, under the model's name), hands back the
 results, and goes on until the model is done. Opened from an app, it first reads the app's
@@ -145,7 +151,9 @@ async def run_preview(ctx, room: str = "default") -> dict:
 The app then serves `/_ddns_tool/manifest` and `/_ddns_tool/call/<name>` on its backend; the
 hub finds them through re-ddns. Calls carry a short-lived JWT signed with the platform's
 `DDNS_AUTH_SECRET`; anything else is refused. `kind` is `read`, `write` or `danger` (shown to
-agents as MCP tool annotations). See `reflex_ddns_auth/tools.py` and `reflex_ddns_auth/rooms.py`.
+agents as MCP tool annotations). A tool that needs the person's OK for something it decides only
+while it runs calls `ask_first(ctx, "read …")`: the hub asks them and calls again with their consent.
+See `reflex_ddns_auth/tools.py` and `reflex_ddns_auth/rooms.py`.
 
 ## For app developers: ask the hub's models
 

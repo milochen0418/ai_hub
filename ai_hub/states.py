@@ -599,7 +599,8 @@ class AssistantState(rx.State):
                 elif kind == "tool":
                     self.messages.append({"kind": "tool", "text": event["name"]})
                 elif kind == "approve":
-                    self.messages.append({"kind": "approve", "id": event["id"], "title": event["title"], "text": event["summary"], "details": event["details"], "state": "pending"})
+                    self.messages.append({"kind": "approve", "id": event["id"], "title": event["title"], "text": event["summary"], "details": event["details"],
+                                          "ask": event.get("ask", "change"), "state": "pending"})
                 elif kind == "decided":
                     self._card(event["id"], event["decision"])
                 elif kind in ("web", "note", "info"):

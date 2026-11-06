@@ -31,6 +31,7 @@ class Result:
     data: Any = None  # the tool's JSON result, its pictures taken out (None: it was one picture)
     error: str = ""
     images: list[tuple[str, str]] = dataclasses.field(default_factory=list)  # (mime, base64), in order
+    ask: dict[str, Any] | None = None  # the app asks the person first: {"what", "detail", "key"} (reflex_ddns_auth.tools.ask_first)
 
     @property
     def image(self) -> tuple[str, str] | None:
@@ -86,21 +87,24 @@ class Entry:
 LOG: collections.deque[Entry] = collections.deque(maxlen=200)
 
 
-async def call(tool: Tool, args: dict[str, Any], user: str, via: str) -> Result:
+async def call(tool: Tool, args: dict[str, Any], user: str, via: str, consent: str = "") -> Result:
+    """Calls an app's tool for ``user``; ``consent``, the key of this call when the person allowed
+    it (``ai_hub.approvals.call_asking``)."""
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             r = await client.post(
                 f"{tool.backend}/_ddns_tool/call/{tool.name}",
                 json={"args": args or {}},
-                headers={"Authorization": f"Bearer {call_token(tool.app, user)}"},
+                headers={"Authorization": f"Bearer {call_token(tool.app, user, consent=consent)}"},
             )
         body = r.json()
         if body.get("ok"):
             data, images = take_pictures(body.get("result"))
             result = Result(True, data, images=images)
         else:
-            result = Result(False, error=str(body.get("error") or f"HTTP {r.status_code}"))
+            ask = body.get("ask") if isinstance(body.get("ask"), dict) else None
+            result = Result(False, error=str(body.get("error") or f"HTTP {r.status_code}"), ask=ask)
     except (httpx.HTTPError, ValueError, PermissionError) as e:
         result = Result(False, error=f"the app {tool.app} did not answer: {e}")
     LOG.appendleft(

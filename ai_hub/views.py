@@ -574,13 +574,15 @@ def file_chip(f: rx.Var) -> rx.Component:
 
 
 def approve_card(m: rx.Var) -> rx.Component:
-    """A change the AI asks to make (``ai_hub.approvals``): what it would do, and the answers."""
+    """A change the AI asks to make, or something it asks to read (``ai_hub.approvals``): what it
+    would do, and the answers."""
+    reading = m["ask"] == "read"
 
-    def answer(label: str, decision: str, style: str) -> rx.Component:
+    def answer(label: str | rx.Var, decision: str, style: str) -> rx.Component:
         return rx.el.button(label, type="button", on_click=AssistantState.decide(m["id"], decision), class_name=style + " approve-" + decision)
 
     return rx.el.div(
-        rx.el.div("The AI wants to make this change: " + m["title"], class_name="text-xs font-semibold text-amber-900"),
+        rx.el.div(rx.cond(reading, "The AI asks for your OK: ", "The AI wants to make this change: ") + m["title"], class_name="text-xs font-semibold text-amber-900"),
         rx.cond(m["text"] != "", rx.el.div(m["text"], class_name="approve-summary text-sm text-slate-900 whitespace-pre-wrap")),
         rx.cond(m["details"] != "", rx.el.pre(m["details"], class_name="approve-details text-xs font-mono text-slate-700 bg-white border border-amber-200 rounded-lg p-2 max-h-56 overflow-auto whitespace-pre-wrap")),
         rx.match(
@@ -588,16 +590,17 @@ def approve_card(m: rx.Var) -> rx.Component:
             (
                 "pending",
                 rx.el.div(
-                    answer("Accept", "accept", BUTTON),
-                    answer("Accept all in this chat", "all", SUBTLE_BUTTON),
-                    answer("Reject", "reject", SUBTLE_BUTTON),
+                    answer(rx.cond(reading, "Allow", "Accept"), "accept", BUTTON),
+                    answer(rx.cond(reading, "Allow all in this chat", "Accept all in this chat"), "all", SUBTLE_BUTTON),
+                    answer(rx.cond(reading, "Decline", "Reject"), "reject", SUBTLE_BUTTON),
                     class_name="flex gap-2 items-center flex-wrap",
                 ),
             ),
-            ("accept", rx.el.div("✓ Accepted", class_name="approve-state text-xs font-semibold text-emerald-700")),
-            ("all", rx.el.div("✓ Accepted (and the rest of this chat)", class_name="approve-state text-xs font-semibold text-emerald-700")),
-            ("reject", rx.el.div("✗ Rejected: nothing changed", class_name="approve-state text-xs font-semibold text-red-700")),
-            rx.el.div("No answer in time: nothing changed", class_name="approve-state text-xs font-semibold text-slate-600"),
+            ("accept", rx.el.div(rx.cond(reading, "✓ Allowed", "✓ Accepted"), class_name="approve-state text-xs font-semibold text-emerald-700")),
+            ("all", rx.el.div(rx.cond(reading, "✓ Allowed (and the rest of this chat)", "✓ Accepted (and the rest of this chat)"),
+                              class_name="approve-state text-xs font-semibold text-emerald-700")),
+            ("reject", rx.el.div(rx.cond(reading, "✗ Declined: it wasn't done", "✗ Rejected: nothing changed"), class_name="approve-state text-xs font-semibold text-red-700")),
+            rx.el.div(rx.cond(reading, "No answer in time: it wasn't done", "No answer in time: nothing changed"), class_name="approve-state text-xs font-semibold text-slate-600"),
         ),
         class_name="approve-card shrink-0 self-start w-[92%] flex flex-col gap-2 bg-amber-50 border border-amber-300 rounded-2xl px-3 py-2",
     )
