@@ -44,3 +44,40 @@ def test_a_token_for_the_helper_needs_the_platform_secret(monkeypatch):
 
     claims = jwt.decode(music._token(), "s3cret", algorithms=["HS256"], audience="music-engine")
     assert claims["sub"] == "ai-hub"
+
+
+def test_what_a_song_may_ask_for_reaches_the_helper():
+    from ai_hub import music
+
+    for key in ("reference", "repaint_start", "repaint_end", "repaint_mode", "seed", "cover_strength"):
+        assert key in music.SPEC_KEYS
+
+
+
+def test_a_song_is_followed_through_a_moment_without_an_answer(monkeypatch):
+    import asyncio
+    import json
+
+    from ai_hub import music
+
+    answers = [(0, "no music engine helper (ConnectTimeout)"), (0, "no music engine helper (ConnectTimeout)"), (200, {"state": "running", "secs": 5}), (200, {"state": "done", "secs": 9, "metas": {"seed": 7}, "models": {"dit": "x"}})]
+
+    async def helper(method, path, body=None, timeout=15.0):
+        return answers.pop(0)
+
+    monkeypatch.setattr(music, "helper", helper)
+    monkeypatch.setattr(music, "POLL", 0.0)
+
+    async def follow():
+        return [json.loads(line) async for line in music._follow("j1", "app", "ann", "cover")]
+
+    lines = asyncio.run(follow())
+    assert [line.get("status") for line in lines[:2]] == [music.STATE_WORDS["slow"]] * 2
+    assert lines[-1]["done"] and lines[-1]["metas"]["seed"] == 7, "the song made all the same"
+
+    answers[:] = [(0, "down")] * 3
+    monkeypatch.setattr(music, "PATIENCE", 0.0)
+    assert "lost the song" in asyncio.run(follow())[-1]["error"], "given up only after a long silence"
+    answers[:] = [(404, {"error": "no such job"})]
+    monkeypatch.setattr(music, "PATIENCE", 999.0)
+    assert "lost the song" in asyncio.run(follow())[-1]["error"], "a job the helper doesn't know is gone"

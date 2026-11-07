@@ -6,8 +6,11 @@ need no address or token of their own: they ask through ``reflex_ddns_auth.ai.mu
 - ``GET /api/ai/music/status``: the engine as the hub sees it (``{"ok", "installed",
   "server", "tier", "why", ...}``);
 - ``POST /api/ai/music``: a song from a spec (caption, lyrics, language, duration; for a cover
-  the recording as ``audio_b64``), answered with lines of JSON while it is made:
-  ``{"status": words, "secs"}``, then ``{"done": true, "id", "secs", "metas", "models"}``;
+  the recording as ``audio_b64``, with ``reference: "source"`` to aim for its sound as well; to
+  remake only a stretch of a song, ``task: "repaint"`` with ``repaint_start``/``repaint_end``
+  and ``repaint_mode``), answered with lines of JSON while it is made: ``{"status": words,
+  "secs"}``, then ``{"done": true, "id", "secs", "metas", "models"}`` (``metas.seed`` makes the
+  same song again);
 - ``GET /api/ai/music/<id>/audio``: the MP3.
 
 Requests carry the apps' usual token (``reflex_ddns_auth.ai.token``). The hub signs its own
@@ -43,13 +46,20 @@ MAKE_PATH = protocol.MUSIC_PATH
 AUDIO_PATH = protocol.MUSIC_PATH + "/{job}/audio"
 AUDIENCE = "music-engine"
 DEFAULT_PORT = 3144
-SPEC_KEYS = ("caption", "lyrics", "language", "duration", "task", "audio_b64", "audio_format", "cover_strength", "repaint_start", "repaint_end", "bpm", "key_scale", "time_signature", "seed", "steps", "thinking")
+SPEC_KEYS = (
+    "caption", "lyrics", "language", "duration", "task", "audio_b64", "audio_format", "cover_strength", "reference",
+    "repaint_start", "repaint_end", "repaint_mode", "bpm", "key_scale", "time_signature", "seed", "steps", "thinking",
+)
 MAX_SPEC_BYTES = 48 * 1024 * 1024
 POLL = 2.0
+# A song keeps being made on the Mac when one look at it fails (the Mac is busy, Docker's way to
+# the host hiccups): the hub stops following it only after this long without an answer.
+PATIENCE = 120.0
 STATE_WORDS = {
     "waiting": "waiting for the engine (another song is being made)",
     "starting": "starting the engine: it loads its models, which takes a minute or two",
     "running": "making the song",
+    "slow": "making the song (the Mac is busy: asking again)",
 }
 INSTALL_WORDS = {"code": "getting the engine's code", "environment": "building its Python environment", "weights": "downloading the weights"}
 
@@ -179,13 +189,23 @@ async def make_endpoint(request: Request) -> Response:
 
 async def _follow(job: str, app: str, user: str, task: str) -> AsyncIterator[str]:
     started = time.time()
+    answered = time.monotonic()  # when the helper last said how the song goes
     while True:
         await asyncio.sleep(POLL)
         code, data = await helper("GET", f"/job/{job}")
-        if code != 200 or not isinstance(data, dict):
+        if code == 404 or (code == 200 and not isinstance(data, dict)):
             LOG.appendleft(Entry(started, app, user, task, time.time() - started, False, str(data)[:200]))
             yield json.dumps({"error": f"lost the song: {str(data)[:200]}"}) + "\n"
             return
+        if code != 200:
+            if time.monotonic() - answered < PATIENCE:
+                logger.info("The music engine's helper didn't answer about job %s (%s): asking again", job, str(data)[:120])
+                yield json.dumps({"status": STATE_WORDS["slow"], "state": "running", "secs": round(time.time() - started)}) + "\n"
+                continue
+            LOG.appendleft(Entry(started, app, user, task, time.time() - started, False, str(data)[:200]))
+            yield json.dumps({"error": f"lost the song: {str(data)[:200]}"}) + "\n"
+            return
+        answered = time.monotonic()
         state = str(data.get("state") or "")
         if state == "done":
             LOG.appendleft(Entry(started, app, user, task, float(data.get("secs") or 0), True))
