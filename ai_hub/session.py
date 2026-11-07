@@ -8,6 +8,10 @@ tools (the hub's MCP address, under the session's token) and answers through the
 own, unmodified Claude Code on the owner's own plan, so only the owner may use it (the
 assistant asks for the hub's passcode first; see ``AssistantState``).
 
+Its hooks also say which model it runs (when it starts, and when it switches models), so what it
+answers is labelled with it (``label``): apps see who answered them, e.g. "Claude Code (your
+computer, claude-opus-5-5)".
+
 One message at a time: the next goes to the session once it has answered the last, so the
 tool calls made with the session's token (``tool_called``/``tool_done``) belong to that chat
 and show in it. The rest of what it does comes from its hooks (``ACTIVITY_PATH``; setup.sh puts
@@ -131,6 +135,12 @@ async def _changed() -> None:
         cond.notify_all()
 
 
+def label() -> str:
+    """What answers through the session, with the model it runs once its hooks said which."""
+    model = config.session_model()
+    return f"Claude Code (your computer, {model})" if model else LABEL
+
+
 def running() -> bool:
     """Whether the channel on the owner's computer is fetching messages."""
     return time.monotonic() - _seen < SEEN
@@ -150,7 +160,7 @@ async def ask(
     if not running():
         await on_event({"type": "error", "text": NOT_RUNNING})
         return
-    await on_event({"type": "model", "text": LABEL})
+    await on_event({"type": "model", "text": label()})
     if files and _channel < FILES_CHANNEL:
         await on_event({"type": "info", "text": OLD_CHANNEL})
         files = ()
@@ -282,6 +292,10 @@ async def _hook(event: dict[str, Any]) -> None:
     """One of the session's hook events, applied to the chat it works on."""
     global _settling, _prompt
     name = event.get("hook_event_name")
+    # Which model it runs: said when it starts, and when it switches (/model).
+    model = event.get("model") if name == "SessionStart" else event.get("to_model") if name == "PostModelSwitch" else None
+    if isinstance(model, str) and model.strip():
+        config.set_session_model(model.strip()[:80])
     prompt = str(event.get("prompt_id") or "")
     _prompt = prompt or _prompt
     turn = _current

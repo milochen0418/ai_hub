@@ -264,7 +264,9 @@ message; the chat lists its web searches, the pages it reads and the apps' tools
 short notes it writes in between. The dialog waits for as long as it works, and stops waiting when
 it answers, ends its turn without answering (the dialog then shows what it last wrote in its
 terminal), fails, or is closed; **New chat** stops waiting at once (its next message goes to the
-session when the turn ends). This comes from the session's
+session when the turn ends). They also say which model it runs (when it starts, and when `/model`
+switches it), so its answers are labelled with it, for the apps too: "Claude Code (your computer,
+claude-opus-5-5)". This comes from the session's
 [hooks](https://code.claude.com/docs/en/hooks), which `setup.sh` writes into
 `.claude/settings.local.json` of the session folder: each pipes its event to `curl`, which posts it
 to `/api/session/activity` (Claude Code's own HTTP hooks may reach only loopback and public

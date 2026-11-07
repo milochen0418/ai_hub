@@ -284,6 +284,21 @@ def mark_session_hooked() -> None:
             save(data)
 
 
+def session_model() -> str:
+    """The model the Claude Code on the owner's computer runs, as its hooks last said (when it
+    started, or switched models); "" until they said. Kept here, so the hub still knows after a
+    restart."""
+    return str(load().get("session", {}).get("model") or "")
+
+
+def set_session_model(model: str) -> None:
+    with _lock:
+        data = load()
+        if data.get("session", {}).get("token_id") and data["session"].get("model") != model:
+            data["session"]["model"] = model
+            save(data)
+
+
 def tokens() -> list[dict[str, Any]]:
     return [{k: t[k] for k in ("id", "name", "created")} for t in load()["tokens"]]
 

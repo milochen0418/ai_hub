@@ -15,7 +15,7 @@ from mcp.client.streamable_http import streamable_http_client
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from ai_hub import agent, attachments, calls, config, mcp_endpoint, registry, session
+from ai_hub import agent, attachments, brains, calls, config, mcp_endpoint, registry, session
 from tests.test_attachments import keep, png_bytes
 
 TOOL = registry.Tool(
@@ -363,6 +363,33 @@ async def test_its_hooks_show_what_it_does_while_it_works(monkeypatch) -> None:
     thinking = [s for s in statuses if s.startswith("Claude Code is thinking (max effort)")]
     assert thinking and "on this message · 3 steps" in thinking[-1]
     assert "it last wrote: “I'll look up the inside first.”" in thinking[-1]
+
+
+async def test_its_hooks_say_which_model_answers(monkeypatch) -> None:
+    token = config.make_session_token()
+    events = []
+
+    async def show(event) -> None:
+        events.append(event)
+
+    async with channel(token) as http:
+        assert session.label() == session.LABEL, "nothing said yet"
+        await http.post(session.ACTIVITY_PATH, json=hook("SessionStart", source="startup", model="claude-opus-5-5"))
+        assert session.label() == "Claude Code (your computer, claude-opus-5-5)"
+        await http.get(session.NEXT_PATH)
+        asking = asyncio.create_task(session.ask("c1", "hello", "cad", "r1", show))
+        await http.get(session.NEXT_PATH)
+        await http.post(session.REPLY_PATH, json={"chat": "c1", "text": "Hi."})
+        await asyncio.wait_for(asking, 5)
+        assert events[0] == {"type": "model", "text": "Claude Code (your computer, claude-opus-5-5)"}
+        await http.post(session.ACTIVITY_PATH, json=hook("PostModelSwitch", from_model="claude-opus-5-5", to_model="claude-sonnet-5-5", source="command"))
+    assert session.label() == "Claude Code (your computer, claude-sonnet-5-5)", "after /model"
+    assert config.session_model() == "claude-sonnet-5-5", "kept for after a restart"
+    config.set_role("smart", f"{config.SESSION}/")
+    provider, _, label = await brains.describe("smart", "music-studio")
+    assert provider.kind == "session" and label == "Claude Code (your computer, claude-sonnet-5-5)", "what apps are told answered them"
+    config.make_session_token()
+    assert session.label() == session.LABEL, "a new session token: a new session, which says its model again"
 
 
 async def test_a_turn_ended_without_an_answer_shows_what_it_last_wrote(monkeypatch) -> None:

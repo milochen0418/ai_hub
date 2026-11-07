@@ -125,9 +125,9 @@ async def describe(role: str, app: str | None = None, user: str = "") -> tuple[c
         model = model or config.CLAUDE_MODEL
         return provider, model, f"Claude ({model})"
     if provider.kind == "session":
-        from ai_hub.session import LABEL
+        from ai_hub.session import label
 
-        return provider, "", LABEL
+        return provider, "", label()
     from ai_hub.brains.openai_compat import pick_model
 
     model = model or await pick_model(provider, role)

@@ -57,6 +57,7 @@ cat > "$DIR/.claude/settings.local.json" <<EOF
 {
   "hooks": {
     "SessionStart": [{ "hooks": [$HOOK] }],
+    "PostModelSwitch": [{ "hooks": [$HOOK] }],
     "UserPromptSubmit": [{ "hooks": [$HOOK] }],
     "PreToolUse": [{ "matcher": "^(?!mcp__)", "hooks": [$HOOK] }],
     "PostToolUse": [{ "matcher": "^(?!mcp__)", "hooks": [$HOOK] }],
